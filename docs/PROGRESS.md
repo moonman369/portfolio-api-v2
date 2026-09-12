@@ -17,7 +17,9 @@ progress log. No application code.
 var name and has a "Leave behind" list; DATA_MODEL is reconciled against the real
 validator. Commit `phase-00: bootstrap docs`.
 
-### `[ ]` Phase 0 — Lean skeleton, stats parity, deploy
+### `[~]` Phase 0 — Lean skeleton, stats parity, deploy
+*Built and tested locally; awaiting the first CI/CD deploy and a live parity run — see
+the Phase 0 handoff entry for the exact remaining steps.*
 **Scope:** `src/server.js`, `src/config.js` (zod-validated, fail fast), `src/db.js`,
 `src/http/app.js` + `auth.js` + `stats.js`, `/health`. `src/stats/github.js` +
 `leetcode.js` rewritten fresh on native fetch with timeouts, keeping the GitHub Mongo cache
@@ -223,6 +225,72 @@ and `moonmind-langchain-feasibility.md` (hyphens); the files in this repo use un
 
 ---
 
+### Phase 0 — Lean skeleton + stats parity — 2026-09-12
+
+**Shipped.** The HTTP skeleton and both stats endpoints in the ARCHITECTURE.md layout,
+with the deploy pipeline. 29 tests pass offline (`node --test`, no network, no keys).
+
+**Files.**
+- `src/config.js` — the only reader of `process.env`; `loadConfig(env)` is pure and
+  testable, `getConfig()` is the memoized singleton. Deep-frozen, fails fast naming
+  every offending variable at once.
+- `src/db.js` — one non-strict `MongoClient` (strict rejects `$vectorSearch`, which is
+  why the old service kept two), lazy connect with concurrent callers sharing one
+  attempt, named collection getters.
+- `src/server.js` — validates config → connects to Mongo → **then** listens, plus
+  graceful SIGTERM/SIGINT shutdown that also closes the client.
+- `src/http/app.js` — middleware, mounting, 404 and the single error handler
+  (message + code, never a stack).
+- `src/http/auth.js` — `requireRefreshSecret` (constant-time via SHA-256 digests) and
+  the `/refresh` rate limiter.
+- `src/http/stats.js` — `/github`, `/leetcode/:username`, `/refresh`.
+- `src/stats/github.js`, `src/stats/leetcode.js` — framework-free, native `fetch` +
+  `AbortSignal.timeout`, every dependency injectable.
+- `scripts/parity-check.js` — deep-diffs old vs new JSON, ignoring volatile fields.
+- `test/config.test.js`, `test/stats/github.test.js`, `test/stats/leetcode.test.js`.
+- `Dockerfile`, `docker-compose.yml`, `.github/workflows/deploy.yml`, `.dockerignore`,
+  `.env.example`, `package.json`, `README.md`; `node_modules/` added to `.gitignore`.
+
+**Env vars.** All new, all in `.env.example`. Required: `MONGO_URI`, `GITHUB_PAT`,
+`REFRESH_PROFILE`, `REFRESH_SECRET`. Defaulted: `NODE_ENV`, `PORT`, `CORS_ORIGINS`,
+`REQUEST_BODY_LIMIT`, `MONGO_DB_NAME`, `MONGO_STATS_COLLECTION`, `MONGO_STATS_DOC_ID`,
+`MONGO_TIMEOUT_MS`, `GITHUB_TIMEOUT_MS`, `REFRESH_RATE_LIMIT_WINDOW_MS`,
+`REFRESH_RATE_LIMIT_MAX`, `LEETCODE_USERNAME`, `LEETCODE_TIMEOUT_MS`,
+`LEETCODE_CACHE_TTL_MS`. `MONGO_STATS_COLLECTION` / `MONGO_STATS_DOC_ID` are new names
+for values the old service hardcoded in `mongo.js`.
+
+**Gate answered (deploy identifiers).** VM folder `portfolio-api-v2` (relative to the
+deploy user's home), container `portfolio-api-v2`, host port `127.0.0.1:8001` →
+container `8000`, subdomain `api.portfolio.moonman.in`. None collide with the old API
+(`~/api-deploy`, `portfolio-stats-api`, port `8000`). The path is **not** hardcoded —
+the workflow reads `secrets.VM_APP_DIR` and fails loudly when it is unset.
+
+**Deviations.** Six, all recorded below (11–16).
+
+**Open items.**
+1. **Not yet verified: the Docker build and CI/CD deploy.** The local Docker daemon was
+   not running, so the image was never built here. The workflow runs `npm test` before
+   building, so a broken build fails CI rather than shipping.
+2. **Not yet verified: `parity-check.js` against live hosts.** It needs both services
+   reachable; the new one is not deployed yet. Run it immediately after the first
+   deploy — this is the remaining half of Phase 0's "Done when".
+3. **VM prerequisites before the first deploy:** create `~/portfolio-api-v2`, copy
+   `docker-compose.yml` into it, create its `.env`, and set the repository secrets
+   `VM_HOST`, `VM_USER`, `VM_SSH_KEY`, `VM_APP_DIR=portfolio-api-v2`.
+4. **Nginx + Certbot for `api.portfolio.moonman.in`** proxying to `127.0.0.1:8001`,
+   forwarding `X-Forwarded-For`/`X-Forwarded-Proto` (the app sets `trust proxy 1`).
+5. **The workflow deploys on push to `main`;** work so far is on `dev`. Nothing ships
+   until that merge.
+6. **Still nothing schedules `/refresh`** (carried over from Phase 00 — the cron died
+   with `vercel.json`). `/github` serves whatever the last refresh wrote. Options: a VM
+   cron calling the endpoint, a scheduled GitHub Actions workflow, or an in-process
+   timer. Worth deciding before cutover.
+7. **No retries on outbound GitHub/LeetCode calls** — timeouts only. Retries land with
+   the Gemini client in Phase 3a, where they are load-bearing; revisit then whether the
+   stats clients want the same treatment.
+
+---
+
 ## Decisions
 
 *(One line per decision: what was decided, by whom, and why. Append as they are made.)*
@@ -233,6 +301,37 @@ and `moonmind-langchain-feasibility.md` (hyphens); the files in this repo use un
 - **2026-09-10 — Code wins over the LLD on every data-model conflict.** The LLD is the
   plan; the old code is the ground truth for behavior that must be preserved. Every
   difference is recorded rather than silently resolved (DATA_MODEL §7, OLD_REPO_MAP §11).
+- **2026-09-12 — Express 5, not 4.** Express 5 forwards rejected promises from async
+  handlers to the error handler by itself. On Express 4 every async route needs its own
+  try/catch, or a shared `asyncHandler` wrapper — which is exactly the kind of
+  grab-bag helper ARCHITECTURE.md §2 forbids. Verified end to end: a rejected handler
+  returns `500 {status, message, code}` with no stack in the body.
+- **2026-09-12 — zod stays on v3 (`^3.25.76`).** Matches the old repo, and Phase 1 has
+  to verify zod against `.withStructuredOutput()` in the installed `@langchain/core`;
+  changing major versions now would confound that check. Revisit in Phase 1.
+- **2026-09-12 — Phase 0 dependencies: `express`, `cors`, `express-rate-limit`,
+  `mongodb`, `zod`. Five, all used.** Dropped from the old set: `axios` (native
+  `fetch` + `AbortSignal.timeout`), `dotenv` (`node --env-file`), `memory-cache` (a
+  9-line TTL `Map`), `nodemon` (`node --watch`), `uuid`, `swagger-jsdoc`,
+  `swagger-ui-express`, `@types/node`. No dev dependencies at all.
+- **2026-09-12 — `config.js` is lazy, not eager.** `loadConfig(env)` is pure; the
+  singleton is built on first `getConfig()`. An eager parse at import time would make
+  `require`ing any module fail without a full environment, which breaks ARCHITECTURE
+  §8's "tests run with no network and no API keys". `server.js` calls `getConfig()`
+  first, so boot still fails fast.
+- **2026-09-12 — Domain modules throw `code`-carrying plain Errors; `http/app.js` owns
+  the code→status map.** Keeps `stats/` (and later `documents/`) framework-free and
+  free of HTTP semantics, per the dependency direction.
+- **2026-09-12 — `scripts/` may read `process.env`.** The "`src/config.js` is the only
+  reader" rule governs the application. `parity-check.js` takes `REFRESH_SECRET` from
+  the environment rather than a CLI flag, so the secret never lands in shell history or
+  a process listing.
+- **2026-09-12 — The VM path is never written into the repo.** The workflow reads
+  `secrets.VM_APP_DIR` with no fallback and exits 1 when it is unset, rather than
+  guessing as the old workflow did. Note that a `~` inside a secret would not be
+  expanded, so the agreed value is the home-relative `portfolio-api-v2`.
+- **2026-09-12 — CI runs `npm test` before building the image.** The old workflow built
+  and deployed without ever running the tests.
 
 ---
 
@@ -278,3 +377,27 @@ with the reason. Append as they arise.)*
     continues, and a comment states the live collection has no validator. Application-side
     `validateDocument()` is the real gate, and it adds the `embedding.length === 768` check
     that no existing layer performs.
+11. **`/refresh` no longer has a `useWorker` mode.** *Why:* the old worker path is dead —
+    `refresh_worker.js`'s `parentPort.on("message")` handler is commented out, so
+    `useWorker=true` returned "Refresh worker has been triggered successfully..." while
+    refreshing nothing, and a `Worker` was constructed on every request and never
+    terminated. The refresh now always runs inline, which is what the old default already
+    did. The parameter is simply ignored. (Leave-behind §10.6.)
+12. **LeetCode difficulty buckets are looked up by `difficulty`, not by array position.**
+    *Why:* the old code assumed `[0..3]` = All/Easy/Medium/Hard and never checked the
+    field, so a reordered response would silently swap the numbers. Identical output for
+    the normal response, with a test covering the reversed case. (Leave-behind §10.37.)
+13. **`/leetcode/:username` returns 404 for an unknown user and 502 for an upstream
+    failure**, where the old service returned 500 for both. *Why:* the old handler let a
+    `TypeError` from destructuring `matchedUser: null` become a generic 500. Parity is
+    unaffected on the happy path, which is what `parity-check.js` compares.
+14. **Error responses carry a `code` and never a stack trace.** *Why:* the old service
+    embedded `serializeError()` — including `stack` — in its 400/500 bodies.
+    (Leave-behind §10.17.)
+15. **`GET /` returns a small JSON identity document instead of redirecting to
+    `/api/docs`.** *Why:* Swagger is on the Leave-behind list (§10.8), so there is no
+    `/api/docs` to redirect to; a bare 404 on the subdomain root reads as an outage.
+16. **`/refresh` is rate limited (5 per 15 min, before the secret check) and the rejected
+    secret is never logged.** *Why:* the endpoint paginates every repository on the
+    profile, and the old handler `console.debug`'d `req.query` on a failed auth, writing
+    the attempted secret to the logs. (Leave-behind §10.18.)

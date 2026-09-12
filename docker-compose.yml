@@ -1,0 +1,29 @@
+services:
+  api:
+    # Built and pushed to GHCR by .github/workflows/deploy.yml.
+    # The VM only pulls this image — it never builds.
+    image: ghcr.io/moonman369/portfolio-api-v2:latest
+    container_name: portfolio-api-v2
+    env_file:
+      - ./.env
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    ports:
+      # Loopback only: Nginx reverse-proxies to this port, so the app is never
+      # exposed publicly and no VM firewall rule is needed.
+      # Host 8001 keeps clear of the old API on 8000; the container still listens
+      # on 8000 internally.
+      - "127.0.0.1:8001:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
