@@ -10,6 +10,7 @@ const express = require("express");
 const cors = require("cors");
 const { getConfig } = require("../config");
 const { createStatsRouter } = require("./stats");
+const { createChatRouter } = require("./chat");
 
 // Domain modules throw plain Errors carrying a `code`; HTTP semantics are decided here,
 // so `stats/` and `documents/` never need to know about status codes.
@@ -89,6 +90,7 @@ function createApp() {
   });
 
   app.use("/api/v1", createStatsRouter());
+  app.use("/api/v1/moonmind", createChatRouter());
 
   app.use(notFoundHandler);
   app.use(errorHandler);

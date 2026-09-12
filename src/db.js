@@ -57,6 +57,15 @@ async function statsCollection() {
   return getCollection(getConfig().mongo.statsCollection);
 }
 
+/**
+ * The underlying MongoClient, connected. Needed by LangGraph's MongoDBSaver, which
+ * takes a client rather than a database handle — this is why it is exported at all.
+ */
+async function getClient() {
+  await connect();
+  return client;
+}
+
 async function close() {
   if (client) {
     await client.close();
@@ -65,4 +74,4 @@ async function close() {
   database = null;
 }
 
-module.exports = { connect, getCollection, statsCollection, close };
+module.exports = { connect, getCollection, statsCollection, getClient, close };

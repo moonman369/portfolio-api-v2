@@ -51,6 +51,9 @@ const envSchema = z.object({
   MONGO_STATS_COLLECTION: nonEmpty.default("gitStatsArchive"),
   MONGO_STATS_DOC_ID: nonEmpty.default("github_stats"),
   MONGO_TIMEOUT_MS: positiveInt.default(10_000),
+  // LangGraph checkpointer storage — conversation state, keyed by thread_id.
+  MONGO_CHECKPOINT_COLLECTION: nonEmpty.default("moonmind_checkpoints"),
+  MONGO_CHECKPOINT_WRITES_COLLECTION: nonEmpty.default("moonmind_checkpoint_writes"),
 
   // ---- GitHub stats refresh ---------------------------------------------
   GITHUB_PAT: nonEmpty,
@@ -64,6 +67,35 @@ const envSchema = z.object({
   LEETCODE_USERNAME: nonEmpty.default("moonman369"),
   LEETCODE_TIMEOUT_MS: positiveInt.default(15_000),
   LEETCODE_CACHE_TTL_MS: positiveInt.default(60 * 60 * 1000),
+
+  // ---- OpenAI (chat completions) -----------------------------------------
+  OPENAI_API_KEY: nonEmpty,
+  // ChatOpenAI takes a full base URL including the version segment, unlike the old
+  // service's adapter which appended "/v1" itself.
+  OPENAI_BASE_URL: nonEmpty.default("https://api.openai.com/v1"),
+
+  // ---- MoonMind chat ------------------------------------------------------
+  MOONMIND_PASSWORD: nonEmpty,
+  // Per-role models stay independent so the cheap roles can move without touching
+  // the others. Unset roles fall back along the chains resolved below.
+  MOONMIND_RESPONSE_MODEL: nonEmpty.default("gpt-4o-mini"),
+  MOONMIND_INTENT_MODEL: nonEmpty.default("gpt-4o-mini"),
+  MOONMIND_ROUTER_MODEL: nonEmpty.optional(),
+  MOONMIND_DECOMPOSE_MODEL: nonEmpty.optional(),
+  MOONMIND_RERANK_MODEL: nonEmpty.optional(),
+  MOONMIND_AGENT_MODEL: nonEmpty.optional(),
+  MOONMIND_MODEL_TIMEOUT_MS: positiveInt.default(60_000),
+
+  // Below this router confidence the turn takes the low-confidence path.
+  MOONMIND_ROUTER_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.5),
+  // A confident classification away from an active flow is treated as a topic change.
+  MOONMIND_TOPIC_CHANGE_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.8),
+  MOONMIND_MAX_MESSAGE_CHARS: positiveInt.default(4_000),
+  // How many recent messages are replayed to a model. `summary` covers the rest
+  // once history outgrows this (populated from Phase 3b).
+  MOONMIND_HISTORY_MAX_MESSAGES: positiveInt.default(20),
+  MOONMIND_RUN_TIMEOUT_MS: positiveInt.default(120_000),
+  MOONMIND_RECURSION_LIMIT: positiveInt.default(25),
 });
 
 function deepFreeze(value) {
@@ -108,6 +140,8 @@ function loadConfig(env) {
       statsCollection: raw.MONGO_STATS_COLLECTION,
       statsDocId: raw.MONGO_STATS_DOC_ID,
       timeoutMs: raw.MONGO_TIMEOUT_MS,
+      checkpointCollection: raw.MONGO_CHECKPOINT_COLLECTION,
+      checkpointWritesCollection: raw.MONGO_CHECKPOINT_WRITES_COLLECTION,
     },
     github: {
       token: raw.GITHUB_PAT,
@@ -123,6 +157,30 @@ function loadConfig(env) {
       defaultUsername: raw.LEETCODE_USERNAME,
       timeoutMs: raw.LEETCODE_TIMEOUT_MS,
       cacheTtlMs: raw.LEETCODE_CACHE_TTL_MS,
+    },
+    openai: {
+      apiKey: raw.OPENAI_API_KEY,
+      baseUrl: raw.OPENAI_BASE_URL,
+      timeoutMs: raw.MOONMIND_MODEL_TIMEOUT_MS,
+    },
+    moonmind: {
+      password: raw.MOONMIND_PASSWORD,
+      // Fallback chains, resolved once here so getModel(role) is a plain lookup:
+      //   router -> intent, decompose -> intent, rerank -> response, agent -> response
+      models: {
+        response: raw.MOONMIND_RESPONSE_MODEL,
+        intent: raw.MOONMIND_INTENT_MODEL,
+        router: raw.MOONMIND_ROUTER_MODEL ?? raw.MOONMIND_INTENT_MODEL,
+        decompose: raw.MOONMIND_DECOMPOSE_MODEL ?? raw.MOONMIND_INTENT_MODEL,
+        rerank: raw.MOONMIND_RERANK_MODEL ?? raw.MOONMIND_RESPONSE_MODEL,
+        agent: raw.MOONMIND_AGENT_MODEL ?? raw.MOONMIND_RESPONSE_MODEL,
+      },
+      routerMinConfidence: raw.MOONMIND_ROUTER_MIN_CONFIDENCE,
+      topicChangeConfidence: raw.MOONMIND_TOPIC_CHANGE_CONFIDENCE,
+      maxMessageChars: raw.MOONMIND_MAX_MESSAGE_CHARS,
+      historyMaxMessages: raw.MOONMIND_HISTORY_MAX_MESSAGES,
+      runTimeoutMs: raw.MOONMIND_RUN_TIMEOUT_MS,
+      recursionLimit: raw.MOONMIND_RECURSION_LIMIT,
     },
   });
 }

@@ -17,9 +17,11 @@ progress log. No application code.
 var name and has a "Leave behind" list; DATA_MODEL is reconciled against the real
 validator. Commit `phase-00: bootstrap docs`.
 
-### `[~]` Phase 0 — Lean skeleton, stats parity, deploy
-*Built and tested locally; awaiting the first CI/CD deploy and a live parity run — see
-the Phase 0 handoff entry for the exact remaining steps.*
+### `[x]` Phase 0 — Lean skeleton, stats parity, deploy
+*Ticked on Ayan's explicit call (2026-09-12) so Phase 1 could start. **Its CI/CD deploy
+and live parity run were never executed** — the code is built and unit-tested, but the
+"Done when" evidence below does not exist yet. Open items 1-5 in the Phase 0 handoff
+entry are still outstanding.*
 **Scope:** `src/server.js`, `src/config.js` (zod-validated, fail fast), `src/db.js`,
 `src/http/app.js` + `auth.js` + `stats.js`, `/health`. `src/stats/github.js` +
 `leetcode.js` rewritten fresh on native fetch with timeouts, keeping the GitHub Mongo cache
@@ -32,7 +34,9 @@ must not collide with the old API's `~/api-deploy`.
 **Done when:** CI/CD deploys; `parity-check.js` shows no diffs for `/leetcode`, `/github`,
 `/refresh`; unit tests cover config validation and cache TTL.
 
-### `[ ]` Phase 1 — Graph skeleton
+### `[~]` Phase 1 — Graph skeleton
+*Built; all offline criteria met. `scripts/router-eval.js` has not been run against the
+real model — there is no `.env` with an OpenAI key in this working copy.*
 **Scope:** install `langchain`, `@langchain/core`, `@langchain/langgraph`,
 `@langchain/openai`, a LangGraph Mongo checkpointer. Verify versions, CommonJS `require()`
 on Node 22, zod + `.withStructuredOutput()`, and which prebuilt agent helper is current
@@ -289,6 +293,75 @@ the workflow reads `secrets.VM_APP_DIR` and fails loudly when it is unset.
    the Gemini client in Phase 3a, where they are load-bearing; revisit then whether the
    stats clients want the same treatment.
 
+### Phase 1 — Graph skeleton — 2026-09-12
+
+**Shipped.** One `StateGraph` with a structured-output router, nine routes, an error
+boundary on every node, a Mongo checkpointer, and the chat endpoint. 79 offline tests
+pass (`node --test`, no network, no keys) — 50 of them new.
+
+**Toolchain verified (Step 1).** All CommonJS `require()` calls succeed on Node 24
+locally; `@langchain/openai` declares `engines.node >= 22`, matching the `node:22-alpine`
+image. Installed: `@langchain/core` 1.2.11, `@langchain/langgraph` 1.4.15,
+`@langchain/openai` 1.5.13, `@langchain/langgraph-checkpoint-mongodb` 1.4.1.
+zod stays at 3.25.76 — `@langchain/core` declares `zod: ^3.25.76 || ^4`, so our pin is
+exactly the supported minimum. `.withStructuredOutput(zodV3Schema)` binds and converts
+to correct JSON Schema (enums included), verified directly.
+
+**Files.**
+- `src/agent/state.js` — the state schema, `ROUTES`, `ACTION_ROUTES`, `PER_TURN_RESET`
+  and `recentMessages`.
+- `src/agent/graph.js` — wiring only: `buildGraph`, `routeFromState`, `ROUTE_TO_NODE`,
+  `withErrorBoundary`. Nodes and the topic-change threshold are injected.
+- `src/agent/models.js` — `getModel(role)` over the six roles, memoized.
+- `src/agent/prompts.js` — every system prompt plus the templated capability copy.
+- `src/agent/nodes/{router,simple,generate}.js`.
+- `src/agent/index.js` — `runTurn` with per-turn reset, recursion limit and wall-clock cap.
+- `src/http/chat.js` — `POST /api/v1/moonmind/chat`; `requirePassword` added to `auth.js`;
+  `getClient()` added to `db.js` for the checkpointer.
+- `scripts/router-eval.js` — 29 labelled prompts, 3-4 per route across all nine.
+- `test/agent/{graph,nodes,index}.test.js`.
+
+**Env vars.** 20 new, all in `.env.example`, all defaulted except two.
+Required: `OPENAI_API_KEY`, `MOONMIND_PASSWORD`. Defaulted: `OPENAI_BASE_URL`,
+`MOONMIND_RESPONSE_MODEL`, `MOONMIND_INTENT_MODEL`, `MOONMIND_ROUTER_MODEL`,
+`MOONMIND_DECOMPOSE_MODEL`, `MOONMIND_RERANK_MODEL`, `MOONMIND_AGENT_MODEL`,
+`MOONMIND_MODEL_TIMEOUT_MS`, `MOONMIND_ROUTER_MIN_CONFIDENCE`,
+`MOONMIND_TOPIC_CHANGE_CONFIDENCE`, `MOONMIND_MAX_MESSAGE_CHARS`,
+`MOONMIND_HISTORY_MAX_MESSAGES`, `MOONMIND_RUN_TIMEOUT_MS`, `MOONMIND_RECURSION_LIMIT`,
+`MONGO_CHECKPOINT_COLLECTION`, `MONGO_CHECKPOINT_WRITES_COLLECTION`. A check confirms
+`.env.example` and `config.js` list exactly the same 36 variables.
+
+**Gate answered (mixed queries).** A ninth route, `stats_and_docs`. Its node composes
+the `stats` and `about_me` nodes in Phase 3b; `graph.js` stays a flat star and
+`routeFromState` stays a pure map lookup.
+
+**Bug caught by the tests.** When the router itself threw, the error boundary wrote a
+graceful answer, but `routeFromState` then fell back to `refusal`, whose node overwrote
+it. Fixed by short-circuiting to `generate` whenever `state.error` is set — which is
+what ARCHITECTURE §5 specifies ("flow continues to `generate`"). Regression test added.
+
+**Deviations.** Five, recorded below (17-21).
+
+**Open items.**
+1. **`scripts/router-eval.js` has not been run against the real model.** It needs a live
+   `OPENAI_API_KEY`; there is no `.env` in this working copy. This is the one Phase 1
+   "Done when" criterion still outstanding. Run
+   `node --env-file=.env scripts/router-eval.js --verbose` and expect 29/29; misses most
+   likely sit on the `stats` / `stats_and_docs` and `about_me` / `complex` boundaries.
+   Tune `ROUTER_SYSTEM_PROMPT`, not the threshold, if it misclassifies.
+2. **Two turns persisting `messages` is proven against `MemorySaver`, not `MongoDBSaver`.**
+   The Mongo checkpointer is wired but never exercised — no Mongo in this environment.
+   First live chat call will confirm it, and will create the two checkpoint collections.
+3. **Phase 5 must reinstall `langchain`** (`npm i langchain`) for `createAgent`. It was
+   installed for the Step 1 verification and removed again to keep the dependency list
+   free of unused entries.
+4. **The chat response shape is not the old one.** New: `{status, data:{sessionId, runId,
+   route, answer}}`; old: `{status, data:{summary, documents}}`. `documents` arrives in
+   Phase 3b. The frontend mapping belongs in Phase 8's `CUTOVER.md` — a base-URL swap
+   alone will not be enough, contrary to ARCHITECTURE §6's assumption.
+5. **Everything carried over from Phase 0** — its deploy and parity run (open items 1-5
+   there) are still outstanding despite the phase now being ticked.
+
 ---
 
 ## Decisions
@@ -401,3 +474,71 @@ with the reason. Append as they arise.)*
     secret is never logged.** *Why:* the endpoint paginates every repository on the
     profile, and the old handler `console.debug`'d `req.query` on a failed auth, writing
     the attempted secret to the logs. (Leave-behind §10.18.)
+
+### Phase 1 decisions — 2026-09-12
+
+- **Agent helper: `createAgent` from `langchain`, not LangGraph's `createReactAgent`.**
+  Settled by the shipped types, not by guesswork —
+  `@langchain/langgraph/dist/prebuilt/react_agent_executor.d.ts` carries
+  ``@deprecated `createReactAgent` has been moved to the langchain package. Update your
+  import to `import { createAgent } from "langchain";```. `makeAgentNode` (Phase 5) uses
+  `createAgent`. This confirms Phase 00's Deviation 8.
+- **zod stays on v3 (3.25.76).** `@langchain/core` 1.2.11 declares
+  `zod: "^3.25.76 || ^4"`, so the Phase 0 pin is exactly the supported minimum.
+  `.withStructuredOutput()` was verified against it. No reason to move to v4 now.
+- **Mixed stats+docs queries get a ninth route, `stats_and_docs`** (Ayan, at the Phase 1
+  gate). The alternative — a `needsDocuments` flag plus a second conditional edge — would
+  have put a branch point outside `routeFromState` and made `graph.js` harder to read.
+  The node composes the existing `stats` and `about_me` nodes, so no logic is duplicated.
+- **Low-confidence router behaviour: redirect to `about_me`, keep the real confidence.**
+  Below `MOONMIND_ROUTER_MIN_CONFIDENCE` (0.5) the turn is routed to `about_me` rather
+  than refused, because the old pipeline's response prompt explicitly forbids answering
+  with a generic refusal, and `about_me` is grounded in retrieved documents and has no
+  side effects. `routeConfidence` still reports what the model actually said, so the
+  eval script and the Phase 4 feed see the truth. The same rule doubles as the guard that
+  keeps a guess from ever reaching `book_catchup` or `send_mail`.
+- **A router parse/call failure uses the same destination**, with `routeConfidence: 0`
+  and empty slots — one deterministic fallback rather than two behaviours to reason about.
+- **Flow stickiness is broken by two signals only:** the router setting
+  `cancelsActiveFlow` (an explicit "cancel"/"never mind"), or a classification into a
+  different route at or above `MOONMIND_TOPIC_CHANGE_CONFIDENCE` (0.8). Otherwise a
+  slot-filling reply stays in the flow regardless of how it classifies.
+- **`cancelsActiveFlow` lives in `slots`, not as a new state field.** `slots` already
+  exists for router-extracted parameters, and the LLD's state list is long enough.
+- **The router schema is flat** (`route`, `confidence`, `which`, `cancelsActiveFlow`)
+  rather than nesting `which` under `slots`. Models fill flat objects far more reliably;
+  `which` is lifted into `slots` by the node, and dropped entirely for non-stats routes.
+- **`buildGraph` uses loops over `ROUTES`** rather than nine literal `.addNode` calls.
+  ARCHITECTURE §4 requires the file to fit on one screen and it does (~95 lines); a loop
+  also makes it structurally impossible for a route to exist without a node, which
+  `test/agent/graph.test.js` asserts.
+- **`POST /api/v1/moonmind/chat` accepts `prompt` as an alias for `message`.** The phase
+  prompt specifies `{sessionId, message}`; ARCHITECTURE §6 wants the frontend cutover to
+  be a base-URL change. The alias satisfies both for the request. The response shape
+  still differs — see Phase 1 open item 4.
+- **A missing `sessionId` starts a new thread rather than erroring.** There is no visitor
+  identity behind the shared password, so the server minting one is the only sensible
+  behaviour; it is returned in the response so the client can continue the thread.
+- **`langchain` was installed for the Step 1 verification, then removed.** It is unused
+  until Phase 5, and CLAUDE.md's end-of-phase checklist forbids unused dependencies.
+  This trims the phase prompt's install list by one package, deliberately.
+
+## Phase 1 deviations from LLD
+
+17. **A ninth route, `stats_and_docs`,** beyond LLD §2's eight. *Why:* the old regex
+    router has a mixed stats+portfolio state the taxonomy cannot express, and dropping it
+    would be a visible regression at cutover. Decided at the Phase 1 gate.
+18. **`cancelsActiveFlow` is carried in `slots`.** *Why:* `routeFromState` needs a signal
+    to break out of a sticky flow, and ARCHITECTURE §5 requires that behaviour; `slots`
+    is already the channel for router-extracted values.
+19. **A router failure routes straight to `generate`, bypassing the branch.** *Why:*
+    otherwise the fallback branch node overwrites the error boundary's graceful answer.
+    ARCHITECTURE §5 already says flow "continues to `generate`"; this makes it literal.
+20. **`MOONMIND_AGENT_MODEL` added** (falls back to `MOONMIND_RESPONSE_MODEL`). *Why:*
+    ARCHITECTURE §4 lists `agent` among `getModel`'s roles, but the LLD names only the
+    four env vars belonging to the old pipeline's four call sites. This gives the agent
+    role the same independence as the rest.
+21. **`OPENAI_BASE_URL` now includes the version segment** (`https://api.openai.com/v1`).
+    *Why:* `ChatOpenAI` takes a full base URL, whereas the old hand-rolled adapter
+    appended `/v1` itself. Carrying the old value across verbatim would produce
+    `/v1/v1/chat/completions`. Flagged in `.env.example`.

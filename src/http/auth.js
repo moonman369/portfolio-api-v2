@@ -35,6 +35,27 @@ function requireRefreshSecret(req, res, next) {
 }
 
 /**
+ * Guards the MoonMind routes with the shared `password` header — the same header the
+ * old service used, so the frontend's cutover does not touch auth. There is no
+ * per-visitor identity behind it.
+ */
+function requirePassword(req, res, next) {
+  const { moonmind } = getConfig();
+  const header = req.headers?.password;
+  const provided = Array.isArray(header) ? header[0] : header;
+
+  if (!secretsMatch(provided, moonmind.password)) {
+    return res.status(401).json({
+      status: "error",
+      message: "Unauthorized",
+      code: "UNAUTHORIZED",
+    });
+  }
+
+  return next();
+}
+
+/**
  * `/refresh` paginates every repository on the profile, so it is expensive in both time
  * and GitHub quota. Limiting it also bounds guessing attempts against the secret.
  */
@@ -54,4 +75,4 @@ function createRefreshLimiter() {
   });
 }
 
-module.exports = { requireRefreshSecret, createRefreshLimiter };
+module.exports = { requirePassword, requireRefreshSecret, createRefreshLimiter };

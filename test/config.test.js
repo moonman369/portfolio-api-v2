@@ -11,6 +11,8 @@ const MINIMAL_ENV = Object.freeze({
   GITHUB_PAT: "test-token",
   REFRESH_PROFILE: "test-profile",
   REFRESH_SECRET: "test-secret",
+  OPENAI_API_KEY: "sk-test-not-used",
+  MOONMIND_PASSWORD: "test-password",
 });
 
 function envWith(overrides) {
@@ -48,8 +50,57 @@ test("fails when a required variable is missing, naming every offender", () => {
       assert.match(error.message, /GITHUB_PAT/);
       assert.match(error.message, /REFRESH_PROFILE/);
       assert.match(error.message, /REFRESH_SECRET/);
+      assert.match(error.message, /OPENAI_API_KEY/);
+      assert.match(error.message, /MOONMIND_PASSWORD/);
       return true;
     },
+  );
+});
+
+test("every model role defaults to gpt-4o-mini", () => {
+  const { models } = loadConfig(MINIMAL_ENV).moonmind;
+
+  assert.deepEqual(models, {
+    response: "gpt-4o-mini",
+    intent: "gpt-4o-mini",
+    router: "gpt-4o-mini",
+    decompose: "gpt-4o-mini",
+    rerank: "gpt-4o-mini",
+    agent: "gpt-4o-mini",
+  });
+});
+
+test("router and decompose fall back to the intent model", () => {
+  const { models } = loadConfig(envWith({ MOONMIND_INTENT_MODEL: "gpt-5-nano" })).moonmind;
+
+  assert.equal(models.router, "gpt-5-nano");
+  assert.equal(models.decompose, "gpt-5-nano");
+  assert.equal(models.response, "gpt-4o-mini", "response is unaffected");
+});
+
+test("rerank and agent fall back to the response model", () => {
+  const { models } = loadConfig(envWith({ MOONMIND_RESPONSE_MODEL: "gpt-5" })).moonmind;
+
+  assert.equal(models.rerank, "gpt-5");
+  assert.equal(models.agent, "gpt-5");
+  assert.equal(models.intent, "gpt-4o-mini", "intent is unaffected");
+});
+
+test("an explicit per-role model overrides its fallback", () => {
+  const { models } = loadConfig(
+    envWith({ MOONMIND_INTENT_MODEL: "gpt-5-nano", MOONMIND_ROUTER_MODEL: "gpt-5-mini" }),
+  ).moonmind;
+
+  assert.equal(models.router, "gpt-5-mini");
+  assert.equal(models.decompose, "gpt-5-nano", "decompose still follows intent");
+});
+
+test("router confidence thresholds are bounded to 0..1", () => {
+  assert.equal(loadConfig(MINIMAL_ENV).moonmind.routerMinConfidence, 0.5);
+  assert.equal(loadConfig(MINIMAL_ENV).moonmind.topicChangeConfidence, 0.8);
+  assert.throws(
+    () => loadConfig(envWith({ MOONMIND_ROUTER_MIN_CONFIDENCE: "1.5" })),
+    /MOONMIND_ROUTER_MIN_CONFIDENCE/,
   );
 });
 
