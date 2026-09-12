@@ -2,15 +2,16 @@
 
 // The single exit node. Every branch converges here before END.
 //
-// When a branch already produced an answer — every branch does today — `generate` just
-// records it on the transcript. Full synthesis from retrieved documents and a stats
-// payload lands in Phase 3b; the pass-through contract does not change then.
+// When a branch already produced an answer — the templated and stubbed ones do —
+// `generate` just records it on the transcript. Otherwise it synthesizes from whatever
+// context the branch gathered. Retrieved documents join the context in Phase 3b; the
+// pass-through contract does not change then.
 
 const { AIMessage, SystemMessage } = require("@langchain/core/messages");
 const { getConfig } = require("../../config");
 const { getModel } = require("../models");
 const { recentMessages } = require("../state");
-const { GENERATE_SYSTEM_PROMPT } = require("../prompts");
+const { GENERATE_SYSTEM_PROMPT, buildStatsContext } = require("../prompts");
 
 function createGenerateNode(deps = {}) {
   return async function generate(state) {
@@ -22,10 +23,15 @@ function createGenerateNode(deps = {}) {
     const model = deps.model ?? getModel("response");
     const history = recentMessages(state.messages, moonmind.historyMaxMessages);
 
-    const response = await model.invoke([
-      new SystemMessage(GENERATE_SYSTEM_PROMPT),
-      ...history,
-    ]);
+    const prompt = [new SystemMessage(GENERATE_SYSTEM_PROMPT), ...history];
+
+    // Context goes after the history so it sits closest to the question being answered.
+    const statsContext = buildStatsContext(state.statsPayload);
+    if (statsContext) {
+      prompt.push(new SystemMessage(statsContext));
+    }
+
+    const response = await model.invoke(prompt);
 
     const answer = typeof response?.content === "string" ? response.content.trim() : "";
     if (!answer) {

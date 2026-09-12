@@ -55,7 +55,9 @@ leak across two turns on one `sessionId`; router parse failure hits the fallback
 the real model. `refusal` and `list_capabilities` return real answers; two turns persist
 `messages` in the checkpointer.
 
-### `[ ]` Phase 2 — `stats` node
+### `[~]` Phase 2 — `stats` node
+*Built; the offline half of "Done when" is met. `docs/evals/stats.md` is a placeholder —
+`scripts/stats-eval.js` needs both services live and has never been run.*
 **Scope:** `src/agent/nodes/stats.js` — a plain function (no agent; the router already
 decided) calling `src/stats/*` directly based on `slots.which`, writing `statsPayload`.
 `generate` synthesizes. No duplicated fetch logic, no HTTP self-calls. If one source fails,
@@ -362,6 +364,49 @@ what ARCHITECTURE §5 specifies ("flow continues to `generate`"). Regression tes
 5. **Everything carried over from Phase 0** — its deploy and parity run (open items 1-5
    there) are still outstanding despite the phase now being ticked.
 
+### Phase 2 — stats node — 2026-09-12
+
+**Shipped.** The `stats` branch and the `stats_and_docs` composite, plus the synthesis
+path that turns a stats payload into prose. 96 offline tests pass (17 new).
+
+**Files.**
+- `src/agent/nodes/stats.js` — `createStatsNode` (plain function, no agent) and
+  `createStatsAndDocsNode` (composes the other two nodes).
+- `src/agent/prompts.js` — `buildStatsContext()` plus grounding rules in
+  `GENERATE_SYSTEM_PROMPT`.
+- `src/agent/nodes/generate.js` — appends the stats context after the history.
+- `src/agent/index.js` — `stats` and `stats_and_docs` off the stub list and wired.
+- `scripts/stats-eval.js`, `docs/evals/stats.md` (placeholder).
+- `test/agent/stats-node.test.js`, `test/agent/prompts.test.js`.
+
+**Env vars.** None added.
+
+**`statsPayload` shape** — the contract `generate` and Phase 4's feed read:
+
+```js
+{ requested: "github" | "leetcode" | "both",
+  github:   { repos, commits, pulls, stars } | null,
+  leetcode: { username, totalSolved, ... }   | null,
+  unavailable: [{ source, reason }] }
+```
+
+**Deviations.** Three, recorded below (22-24).
+
+**Open items.**
+1. **`docs/evals/stats.md` is a placeholder — the live eval has never been run.** This is
+   the outstanding half of Phase 2's "Done when". It needs both services reachable and a
+   live key. Running it overwrites the file:
+   `node --env-file=.env scripts/stats-eval.js --old <old-host> --new <new-host>`.
+2. **Run `/api/v1/refresh` on the new service before the eval.** Otherwise
+   `/api/v1/github` returns `null`, the node correctly reports GitHub as unavailable, and
+   the comparison is meaningless.
+3. **Question 5 (the mixed query) will under-answer until Phase 3b.** `stats_and_docs`
+   composes `about_me`, which is still a stub, so the portfolio half contributes nothing.
+   The stats half is correct and the answer degrades gracefully; expect the old pipeline
+   to say more here.
+4. **Carried over:** Phase 1's `router-eval` is still unrun, and Phase 0's deploy and
+   parity run are still outstanding.
+
 ---
 
 ## Decisions
@@ -542,3 +587,49 @@ with the reason. Append as they arise.)*
     *Why:* `ChatOpenAI` takes a full base URL, whereas the old hand-rolled adapter
     appended `/v1` itself. Carrying the old value across verbatim would produce
     `/v1/v1/chat/completions`. Flagged in `.env.example`.
+
+### Phase 2 decisions — 2026-09-12
+
+- **The stats node writes only `statsPayload`; `generate` writes the answer.** The phase
+  brief says "`generate` synthesizes", and keeping the branch free of prose is what lets
+  `stats_and_docs` reuse it — a mixed question must be answered once, from both halves,
+  not twice.
+- **`Promise.allSettled`, not `Promise.all`, for the two sources.** A dead LeetCode must
+  not cost the user their GitHub numbers. Failures land in `statsPayload.unavailable` as
+  `{source, reason}` and the run continues.
+- **An unrecognised or missing `slots.which` answers with both sources.** The router
+  normally fills it, but answering with more than asked is a better failure than
+  answering with nothing.
+- **A never-refreshed GitHub document reads as unavailable, not as zeroes.**
+  `readGithubStats()` returns `null` until `/refresh` has run once; reporting "0 repos"
+  would be a confident lie.
+- **The internal `reason` never reaches the prompt.** `buildStatsContext` says a source
+  is `UNAVAILABLE` and nothing more — "mongo unreachable" is for the logs, not the user.
+- **`stats_and_docs` drops `finalAnswer` from both halves and uses `allSettled`.** It
+  keeps `statsPayload` from one and `documents` from the other. Dropping `finalAnswer`
+  is what stops the `about_me` stub's "not implemented yet" from becoming the whole
+  answer; `allSettled` means a retrieval outage still returns the stats.
+- **`buildStatsContext` lives in `prompts.js`, not in the node.** CLAUDE.md puts every
+  prompt there, and this is prompt text. It also made `test/agent/prompts.test.js` the
+  natural home for its tests, which brought `stats-node.test.js` back under the 250-line
+  rule.
+- **The eval flags unverified numbers over 100, excluding 1990-2100.** Years in prose
+  would otherwise drown the signal. A real stat that looks like a year still shows up
+  under `matched`; the trade-off is deliberate for a human-reviewed file.
+
+## Phase 2 deviations from LLD
+
+22. **`statsPayload` carries both sources plus an `unavailable` list**, where the old
+    pipeline used `{type: "github_stats" | "leetcode_stats", data}` — one source per turn.
+    *Why:* the old shape cannot express "both", so *"compare my GitHub and LeetCode
+    activity"* silently dropped half the question (`OLD_REPO_MAP.md` §10.35). The new
+    shape also carries partial failure, which the old one had no way to express.
+23. **`GENERATE_SYSTEM_PROMPT` gained grounding rules for a CONTEXT block.** *Why:* the
+    LLD puts full synthesis in Phase 3b, but Phase 2's brief requires `generate` to
+    synthesize stats now. The rules added are the numeric ones — never invent a number,
+    never describe an unavailable source as though it had data. Document grounding joins
+    them in 3b.
+24. **The old pipeline's `Date.now()` "today's date" bug is not reproduced.** *Why:* the
+    old response prompt interpolated raw epoch milliseconds as the current date
+    (`OLD_REPO_MAP.md` §10.34). Phase 2's prompt simply omits a date; if the answer path
+    needs one later it gets an ISO string.

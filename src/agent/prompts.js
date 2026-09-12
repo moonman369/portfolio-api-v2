@@ -44,7 +44,41 @@ const GENERATE_SYSTEM_PROMPT = [
   "Answer the user's question clearly and concisely in clean markdown.",
   "Never invent facts about Ayan. If you do not have grounding for a claim, say so.",
   "Do not mention routes, retrieval, embeddings, scores, or any internal machinery.",
+  "",
+  "When a CONTEXT block follows, it is your only source of truth for the facts it",
+  "carries. Never estimate, round or invent a number that is not in it, and never",
+  "describe a source listed as unavailable as though you had its data - say plainly",
+  "that it could not be fetched right now and answer with what you do have.",
 ].join("\n");
+
+const SOURCE_LABELS = Object.freeze({ github: "GitHub", leetcode: "LeetCode" });
+
+/**
+ * Serialize the stats payload for the answer prompt, or return null when there is
+ * nothing to add. JSON keeps the numbers unambiguous; the unavailable list is spelled
+ * out in words so the model cannot mistake it for data.
+ */
+function buildStatsContext(statsPayload) {
+  if (!statsPayload) {
+    return null;
+  }
+
+  const lines = ["CONTEXT - live stats for Ayan:"];
+
+  Object.keys(SOURCE_LABELS).forEach((source) => {
+    if (statsPayload[source]) {
+      lines.push(`${SOURCE_LABELS[source]}: ${JSON.stringify(statsPayload[source])}`);
+    }
+  });
+
+  (statsPayload.unavailable ?? []).forEach(({ source }) => {
+    lines.push(
+      `${SOURCE_LABELS[source] ?? source}: UNAVAILABLE - could not be fetched for this answer.`,
+    );
+  });
+
+  return lines.length > 1 ? lines.join("\n") : null;
+}
 
 const REFUSAL_ANSWER = [
   "I can't help with that one.",
@@ -92,6 +126,7 @@ function buildCapabilitiesAnswer() {
 module.exports = {
   ROUTER_SYSTEM_PROMPT,
   GENERATE_SYSTEM_PROMPT,
+  buildStatsContext,
   REFUSAL_ANSWER,
   ERROR_ANSWER,
   NOT_IMPLEMENTED_ANSWER,

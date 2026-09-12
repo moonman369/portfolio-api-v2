@@ -12,13 +12,12 @@ const { buildGraph } = require("./graph");
 const { ROUTES, PER_TURN_RESET } = require("./state");
 const { createRouterNode } = require("./nodes/router");
 const { createGenerateNode } = require("./nodes/generate");
+const { createStatsNode, createStatsAndDocsNode } = require("./nodes/stats");
 const { refusal, listCapabilities, makeStubNode } = require("./nodes/simple");
 
-// Routes whose real implementation lands in a later phase (2, 3b, 5, 6b, 7).
+// Routes whose real implementation lands in a later phase (3b, 5, 6b, 7).
 const STUBBED_ROUTES = Object.freeze([
   "about_me",
-  "stats",
-  "stats_and_docs",
   "tech_web",
   "complex",
   "book_catchup",
@@ -36,6 +35,14 @@ function createNodes() {
 
   STUBBED_ROUTES.forEach((route) => {
     nodes[route] = makeStubNode(route);
+  });
+
+  // stats_and_docs composes the other two rather than reimplementing either, so Phase 3b
+  // only has to replace `about_me` for the mixed route to become complete.
+  nodes.stats = createStatsNode();
+  nodes.stats_and_docs = createStatsAndDocsNode({
+    statsNode: nodes.stats,
+    aboutMeNode: nodes.about_me,
   });
 
   return nodes;
