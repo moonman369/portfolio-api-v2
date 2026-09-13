@@ -1195,3 +1195,130 @@ with the reason. Append as they arise.)*
     exists for. The seam matches the `deps` pattern `about-me.js` and `stats.js` already
     use, and the toolset is still bound and still reported by `toolNames`, so the isolation
     assertions are unaffected by it.
+
+### Out-of-band fix: tech_web answered from memory — 2026-09-13
+
+**Reported.** "Tell me something about the latest GPT frontier model" came back describing
+**GPT-4o, May 2024** — the model's training knowledge, not the web — with `route:
+"tech_web"`. The suspicion was that the Tavily call was not going through, and there was
+no logging to tell.
+
+**Tavily was fine.** A direct call returned 5 results and the correct current answer, and
+instrumenting the real node showed `web_search` invoked on every request with 5 sources
+written to `searchResults`. The search ran; the answer did not use it.
+
+**Root cause: `TECH_WEB_SYSTEM_PROMPT` never told the agent what day it is.** With no date,
+gpt-4o-mini anchors on its training cutoff and *writes the year into its own search query*.
+Reproducible, and confirmed by A/B on the same question:
+
+| prompt | query the model wrote | answer |
+|---|---|---|
+| as shipped | `latest GPT frontier model 2023` | GPT-5.2, framed as "the landscape in 2023" |
+| + date context | `latest GPT frontier model 2026` | GPT-5.6, July 2026 — correct |
+
+So the failure was upstream of the search: a stale query returned stale-ish results, and
+the model filled the gaps from memory. Note it still cited a URL, which is what made this
+look like a working search — the answer's `help.openai.com` link is genuinely Tavily's top
+result for this query.
+
+**This is Deviation 32 in a new place.** That one recorded the old service interpolating
+`Date.now()` epoch milliseconds as "today's date" into the response prompt. `generate` was
+fixed in Phase 3b via `buildDateContext()`; Phase 5 then built an agent prompt without it.
+
+**Fixed.**
+1. `makeAgentNode` composes its system prompt through `dynamicSystemPromptMiddleware`
+   rather than passing `systemPrompt`, appending `buildDateContext()` **per run**. Per run
+   matters: `createNodes()` executes once at boot and the container is always-on, so a
+   date captured at construction is wrong by the next day. The middleware appends a second
+   system message rather than replacing the first, which is why `systemPrompt` is now
+   dropped instead of kept alongside it.
+   Applied in the factory, so every agent inherits it — Phase 6b cannot resolve "next
+   Tuesday" without it either.
+2. `web_search` logs `agent.web_search { query, results, ms }` on success and
+   `agent.web_search.failed { query, code, message, ms }` on failure. **Server log only.**
+   The persisted feed still carries no tool arguments; this is a per-tool decision, and the
+   reasoning does not transfer to `send_email`, whose arguments are the visitor's words
+   rather than the model's.
+3. Two regression tests: the agent's system prompt contains today's date, and it is
+   resolved per run rather than frozen at build.
+
+**Why the feed did not catch this.** It showed `web_search -> 5 results`, which looked
+healthy. The bad query was invisible because `summarizeTool` deliberately excludes tool
+arguments. That redaction rule is still right for the persisted feed; the server log is
+the correct place for the query.
+
+**Worth knowing:** an agent *swallows* a tool failure — the error comes back to the model
+as a tool result and it answers from memory, which from outside is indistinguishable from
+a healthy answer. `agent.web_search.failed` is now the only signal that this happened.
+
+**Open.** `MOONMIND_AGENT_MODEL` is unset, so agents run on `gpt-4o-mini` via the RESPONSE
+fallback. It is a weak model for deciding when and what to search, and it was weak enough
+here to date its own query. Worth setting it to something stronger for the agent role and
+re-running the Phase 5 live check both ways before Phase 6b hands an agent real actions.
+
+### Out-of-band: scope guard before tool dispatch — 2026-09-13
+
+**Asked for.** A small classifier before the Tavily call: if the question is about an
+excluded topic, the search does not go through and the visitor gets a "beyond MoonMind's
+scope" message. Ayan's calls at the gate: **make the topic list extendable** rather than
+fixed, and **redirect** in the message rather than dead-ending or naming the topic.
+
+**Shipped.** 332 offline tests pass (10 new). One extra cheap model call per agent
+question; a blocked question costs that and nothing else — no agent loop, no search credit.
+
+**Where it sits.** In `makeAgentNode`, opt-in per agent via `scopeGuard: true`, so Phases
+6b and 7 inherit it without inheriting the decision. It runs on the **visitor's question**,
+not on the query the model would have written — the right input for a topic judgement, and
+it means the gate closes before any tool is dispatched. Wrapped as a named runnable so it
+shows in the Phase 4 feed as `tech_web.scope_check`: a guardrail that runs invisibly is one
+nobody can audit.
+
+**Not the same thing as the router's `refusal` route,** and deliberately so. The router
+decides which branch answers; this decides whether a question that already reached an agent
+is worth a search. They disagree exactly where you would expect — "which crypto should I
+buy right now" is a perfectly good industry question as far as the router is concerned.
+
+**Extendable, as asked.** `EXCLUDED_TOPICS` in `agent/prompts.js` is a list of
+`{ id, description }`, and the classifier prompt is generated from it — the same idiom as
+`buildCapabilitiesAnswer` templating from the route enum. Adding a topic is one entry and
+nothing else. `MOONMIND_EXCLUDED_TOPICS` appends to it at runtime, so the VM can gain a
+topic with a container restart instead of a rebuild. Seeded with eight defaults
+(medical/legal/financial advice, trading speculation, politics, religion, adult content,
+violence/illicit) — **my choice, not a stated requirement**; delete lines freely.
+
+**Verified live**, real classifier and real search:
+
+| question | result |
+|---|---|
+| latest GPT frontier model | allowed, 5 sources |
+| which crypto should I buy right now | blocked — `trading_speculation` |
+| sharp headache for three days | blocked — `medical_advice` |
+| who should I vote for | blocked — `politics` |
+| **best Python library for medical imaging** | **allowed, 5 sources** |
+| should I sue my landlord | blocked — `legal_advice` |
+
+That fifth row is the one that matters: a software question that merely mentions an
+excluded field stays in scope. It is why this is an LLM classifier and not a keyword list —
+a keyword list fails that case, and a scope guard with false positives is worse than none.
+
+**Fails open, on purpose.** If the classifier errors the question is allowed through and
+the failure is logged. This is an editorial filter, not a safety control: the model's own
+training still applies and `refusal` still exists, so taking every tech question down
+because a classifier hiccuped is the worse outcome. The catch sits at the **call site**,
+not only inside the classifier, so no guard — including an injected one — can take the
+route down. **This reasoning does not transfer to Phase 6b's calendar confirmation**,
+which guards a side effect and must fail closed.
+
+**Logging.** `agent.scope_guard.blocked { node, topic }` on a block,
+`agent.scope_guard.failed` / `.errored` on failure. The topic is logged but never shown:
+naming it back would tell a prober exactly what the filter keys on.
+
+**Structure.** `prompts.js` is now 350 lines and `agents.js` 241. The topic list and the
+classifier prompt belong in `prompts.js` by its own stated rule ("every system prompt"),
+and a new `agent/scope.js` would have needed a gate for one small module — so prompts.js
+is now the **seventh** file over the ~250 guideline and by some way the largest offender.
+Splitting it by audience (router / generate / agents / user-facing copy) is the obvious
+move and is the clearest candidate yet for the Phase 8 structure audit.
+
+**Env vars.** Two added, total 76: `MOONMIND_SCOPE_GUARD_ENABLED` (default true) and
+`MOONMIND_EXCLUDED_TOPICS` (empty).

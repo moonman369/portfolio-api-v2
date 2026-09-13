@@ -45,6 +45,11 @@ function createNodes() {
     toolset: TOOLSETS.tech_web,
     prompt: TECH_WEB_SYSTEM_PROMPT,
     sourcesField: "searchResults",
+    // Classify before searching. The router already sends off-topic questions to
+    // `refusal`, but it decides which branch answers, not whether a question that
+    // reached this one is worth a web search — "which coin should I buy" is a plausible
+    // industry question as far as it is concerned.
+    scopeGuard: true,
   });
 
   // stats_and_docs composes the other two rather than reimplementing either.

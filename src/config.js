@@ -141,6 +141,11 @@ const envSchema = z.object({
   MOONMIND_HISTORY_MAX_MESSAGES: positiveInt.default(20),
   MOONMIND_RUN_TIMEOUT_MS: positiveInt.default(120_000),
   MOONMIND_AGENT_MAX_STEPS: positiveInt.max(20).default(4),
+  // The scope guard: one cheap classification before an agent dispatches any tool.
+  // The topic list lives in `agent/prompts.js` (EXCLUDED_TOPICS); this appends to it, so
+  // the VM can gain a topic by editing .env instead of waiting for a build.
+  MOONMIND_SCOPE_GUARD_ENABLED: booleanFlag(true),
+  MOONMIND_EXCLUDED_TOPICS: optionalList,
   MOONMIND_RECURSION_LIMIT: positiveInt.default(25),
 
   // ---- Gemini embeddings --------------------------------------------------
@@ -276,6 +281,8 @@ function loadConfig(env) {
       // How many model calls one agent node gets per run. Each tool-calling round is
       // one, so this bounds both cost and latency for `tech_web` and every agent after.
       agentMaxSteps: raw.MOONMIND_AGENT_MAX_STEPS,
+      scopeGuardEnabled: raw.MOONMIND_SCOPE_GUARD_ENABLED,
+      excludedTopics: raw.MOONMIND_EXCLUDED_TOPICS,
     },
     tavily: {
       apiKey: raw.TAVILY_API_KEY,

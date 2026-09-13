@@ -170,6 +170,107 @@ const TECH_WEB_SYSTEM_PROMPT = [
   "technical part of the question if there is one.",
 ].join("\n");
 
+// ---------------------------------------------------------------------------
+// Scope guard
+// ---------------------------------------------------------------------------
+
+/**
+ * Topics an agent will not spend a web search on.
+ *
+ * **This is the list to edit.** Adding a topic is one entry here and nothing else: the
+ * classifier prompt is generated from it, the same way `buildCapabilitiesAnswer` is
+ * generated from the route enum. `MOONMIND_EXCLUDED_TOPICS` appends to it at runtime,
+ * so the VM can gain a topic without a rebuild.
+ *
+ * `id` is what the classifier returns and what gets logged; it is never shown to a
+ * visitor. `description` is what the model actually classifies against, so it should
+ * read as a category, not as a keyword.
+ *
+ * This is deliberately *not* the same thing as the router's `refusal` route. The router
+ * decides which branch answers; this decides whether a question that already reached an
+ * agent is worth a search. They can disagree — "which coin should I buy right now" is a
+ * perfectly good industry question as far as the router is concerned.
+ */
+const EXCLUDED_TOPICS = Object.freeze([
+  {
+    id: "medical_advice",
+    description: "Medical, health, diagnostic or mental-health advice about a real person.",
+  },
+  {
+    id: "legal_advice",
+    description: "Legal advice, or how to handle a specific legal or immigration situation.",
+  },
+  {
+    id: "financial_advice",
+    description: "Personal financial, tax or investment advice, including what to buy or sell.",
+  },
+  {
+    id: "trading_speculation",
+    description:
+      "Crypto or stock speculation - price predictions, trading strategies, which asset will go up.",
+  },
+  {
+    id: "politics",
+    description: "Party politics, elections, political figures, or contested political issues.",
+  },
+  {
+    id: "religion",
+    description: "Religious doctrine, practice, or comparisons between faiths.",
+  },
+  {
+    id: "adult_content",
+    description: "Sexual or pornographic content.",
+  },
+  {
+    id: "violence_illicit",
+    description:
+      "Weapons, drugs, self-harm, or how to carry out anything illegal or physically harmful.",
+  },
+]);
+
+/** The topic list in force: the built-in defaults plus anything config appended. */
+function resolveExcludedTopics(extraTopics = []) {
+  const extra = extraTopics
+    .map((topic) => String(topic).trim())
+    .filter(Boolean)
+    .map((topic) => ({ id: topic, description: topic.replace(/_/g, " ") }));
+
+  return [...EXCLUDED_TOPICS, ...extra];
+}
+
+/** The classifier's system prompt, generated from whichever list is in force. */
+function buildScopePrompt(topics) {
+  return [
+    "You decide whether MoonMind should research a visitor's question on the web.",
+    "MoonMind is the assistant on Ayan Maiti's software portfolio site. It answers",
+    "questions about Ayan and about technology and the software industry.",
+    "",
+    "Mark the question OUT of scope if it is substantially about any of these:",
+    "",
+    ...topics.map((topic) => `- ${topic.id}: ${topic.description}`),
+    "",
+    "Otherwise it is IN scope.",
+    "",
+    "Judge what the question is actually asking for, not the words it uses. A technical",
+    "question that merely mentions an excluded field is IN scope - asking which Python",
+    "library suits medical imaging is a software question, while asking what a symptom",
+    "means is medical advice. Set `topic` to the matching id when out of scope, and to",
+    "null when in scope.",
+  ].join("\n");
+}
+
+/**
+ * Shown when the scope guard blocks a question. Mirrors REFUSAL_ANSWER's tone and, like
+ * it, redirects rather than dead-ending — but deliberately does not name the topic that
+ * matched, which would tell a prober exactly what the filter keys on.
+ */
+const OUT_OF_SCOPE_ANSWER = [
+  "That one's beyond what MoonMind covers.",
+  "",
+  "I answer questions about Ayan's work, his GitHub and LeetCode stats, and technology",
+  "topics, and I can pass a message along to him. Ask me any of those and I'll do my best.",
+].join("\n");
+
 /** Shown when an agent used every step it had and never got to write an answer. */
 function buildTruncatedAnswer(sources = []) {
   const links = sources
@@ -238,6 +339,10 @@ module.exports = {
   ERROR_ANSWER,
   NOT_IMPLEMENTED_ANSWER,
   TECH_WEB_SYSTEM_PROMPT,
+  EXCLUDED_TOPICS,
+  resolveExcludedTopics,
+  buildScopePrompt,
+  OUT_OF_SCOPE_ANSWER,
   buildTruncatedAnswer,
   AGENT_NO_ANSWER,
   CAPABILITY_DESCRIPTIONS,

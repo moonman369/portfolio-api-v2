@@ -23,7 +23,14 @@ const { HumanMessage } = require("@langchain/core/messages");
 
 const { makeAgentNode, collectSources, wasTruncated, toText } = require("../../src/agent/nodes/agents");
 const { TOOLSETS, createWebSearchTool, renderSearch } = require("../../src/agent/tools");
-const { TECH_WEB_SYSTEM_PROMPT, AGENT_NO_ANSWER } = require("../../src/agent/prompts");
+const {
+  TECH_WEB_SYSTEM_PROMPT,
+  AGENT_NO_ANSWER,
+  OUT_OF_SCOPE_ANSWER,
+  EXCLUDED_TOPICS,
+  resolveExcludedTopics,
+  buildScopePrompt,
+} = require("../../src/agent/prompts");
 const { getConfig } = require("../../src/config");
 
 const RESULTS = [
@@ -200,6 +207,145 @@ test("an agent returning no messages at all does not crash the node", async () =
   const update = await node({}, { agent })(state(), {});
 
   assert.equal(update.finalAnswer, AGENT_NO_ANSWER);
+});
+
+// ---------------------------------------------------------------------------
+// Scope guard
+// ---------------------------------------------------------------------------
+
+/** A guard stub standing in for the classifier. */
+const verdict = (inScope, topic = null) => async () => ({ inScope, topic });
+
+test("an out-of-scope question never reaches a tool", async () => {
+  const calls = [];
+  const search = createWebSearchTool({
+    search: async (query) => {
+      calls.push(query);
+      return { query, answer: null, results: RESULTS };
+    },
+  });
+
+  const guarded = node(
+    { toolset: [search], scopeGuard: true },
+    { scopeGuard: verdict(false, "financial_advice"), model: scriptedModel(1) },
+  );
+
+  const update = await guarded(state("which crypto should I buy right now?"), {});
+
+  assert.equal(calls.length, 0, "no search was dispatched, so no credit was spent");
+  assert.equal(update.finalAnswer, OUT_OF_SCOPE_ANSWER);
+  assert.deepEqual(update.searchResults, []);
+});
+
+test("the blocked answer redirects and does not name the topic that matched", async () => {
+  const guarded = node({ scopeGuard: true }, { scopeGuard: verdict(false, "politics") });
+  const update = await guarded(state("who should I vote for?"), {});
+
+  assert.match(update.finalAnswer, /beyond what MoonMind covers/);
+  assert.match(update.finalAnswer, /Ayan's work/, "it redirects rather than dead-ending");
+  assert.ok(!update.finalAnswer.includes("politics"), "the matched topic is never echoed back");
+});
+
+test("an in-scope question proceeds to the agent as normal", async () => {
+  const guarded = node({ scopeGuard: true }, { scopeGuard: verdict(true) });
+  const update = await guarded(state(), {});
+
+  assert.equal(update.searchResults.length, 2);
+  assert.ok(update.finalAnswer.includes("Node 22"));
+});
+
+test("the guard classifies the visitor's question, not the model's search query", async () => {
+  const seen = [];
+  const guarded = node(
+    { scopeGuard: true },
+    { scopeGuard: async (question) => { seen.push(question); return { inScope: true, topic: null }; } },
+  );
+
+  await guarded(state("what is new in Node 22?"), {});
+  assert.deepEqual(seen, ["what is new in Node 22?"]);
+});
+
+test("an agent without scopeGuard is never gated", async () => {
+  let called = false;
+  const guarded = node(
+    { scopeGuard: false },
+    { scopeGuard: async () => { called = true; return { inScope: false, topic: "x" }; } },
+  );
+
+  const update = await guarded(state(), {});
+  assert.equal(called, false);
+  assert.notEqual(update.finalAnswer, OUT_OF_SCOPE_ANSWER);
+});
+
+test("the guard can be switched off by config without touching code", async () => {
+  const config = { ...getConfig(), moonmind: { ...getConfig().moonmind, scopeGuardEnabled: false } };
+  let called = false;
+
+  const guarded = makeAgentNode(
+    { name: "tech_web", toolset: [fakeSearchTool()], prompt: "p", sourcesField: "searchResults", scopeGuard: true },
+    {
+      config,
+      model: scriptedModel(1),
+      scopeGuard: async () => { called = true; return { inScope: false, topic: "x" }; },
+    },
+  );
+
+  await guarded(state(), {});
+  assert.equal(called, false, "MOONMIND_SCOPE_GUARD_ENABLED=false disables it");
+});
+
+test("a classifier that throws fails open rather than blocking every question", async () => {
+  // An editorial filter, not a safety control: a broken classifier must not take the
+  // whole route down with it. (Phase 6b's calendar confirmation is the opposite case.)
+  const guarded = node(
+    { scopeGuard: true },
+    { scopeGuard: async () => { throw new Error("model unavailable"); }, model: scriptedModel(1) },
+  );
+
+  const update = await guarded(state(), {});
+  assert.notEqual(update.finalAnswer, OUT_OF_SCOPE_ANSWER);
+  assert.equal(update.searchResults.length, 2, "the search still ran");
+});
+
+test("the topic list is extendable, and config appends to the built-in defaults", () => {
+  const extended = resolveExcludedTopics(["gambling", "  ", "celebrity_gossip"]);
+
+  assert.equal(extended.length, EXCLUDED_TOPICS.length + 2, "blank entries are ignored");
+  assert.deepEqual(extended.slice(-2).map((t) => t.id), ["gambling", "celebrity_gossip"]);
+
+  // Every topic reaches the prompt the classifier is given — adding one is a single edit.
+  const built = buildScopePrompt(extended);
+  extended.forEach((topic) => assert.ok(built.includes(topic.id), `${topic.id} is in the prompt`));
+});
+
+// ---------------------------------------------------------------------------
+// Date context
+// ---------------------------------------------------------------------------
+
+test("every agent is told today's date, in its system prompt", async () => {
+  // Without it a model anchors on its training cutoff: gpt-4o-mini was observed
+  // appending "2023" to its own search queries and then answering from those results.
+  // FakeToolCallingModel echoes the system prompt it received, so the echo is the
+  // assertion.
+  const model = new FakeToolCallingModel({ toolCalls: [[]] });
+  const update = await node({ prompt: "BASE PROMPT" }, { model })(state(), {});
+
+  const today = new Date().toISOString().slice(0, 10);
+  assert.ok(update.finalAnswer.includes("BASE PROMPT"), "the caller's prompt survives");
+  assert.ok(update.finalAnswer.includes(today), `expected today's date (${today}) in the prompt`);
+});
+
+test("the date is resolved per run, not frozen when the node was built", async () => {
+  // The container is always-on and `createNodes()` runs once at boot, so a date captured
+  // at construction would be wrong by the next day.
+  const seen = [];
+  const built = node({ prompt: "BASE" }, { model: new FakeToolCallingModel({ toolCalls: [[]] }) });
+
+  seen.push((await built(state(), {})).finalAnswer);
+  seen.push((await built(state(), {})).finalAnswer);
+
+  const today = new Date().toISOString().slice(0, 10);
+  seen.forEach((answer) => assert.ok(answer.includes(today)));
 });
 
 // ---------------------------------------------------------------------------

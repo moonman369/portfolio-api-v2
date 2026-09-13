@@ -49,7 +49,35 @@ function createWebSearchTool(deps = {}) {
 
   return tool(
     async ({ query }) => {
-      const found = await run(query);
+      const startedAt = Date.now();
+
+      let found;
+      try {
+        found = await run(query);
+      } catch (error) {
+        // An agent swallows a tool failure: the error comes back to the model as a tool
+        // result and it answers from memory instead, which looks identical to a good
+        // answer from the outside. This line is the only place that failure is visible.
+        console.error("agent.web_search.failed", {
+          query,
+          code: error?.code ?? null,
+          message: error?.message,
+          ms: Date.now() - startedAt,
+        });
+        throw error;
+      }
+
+      // The query the *model* wrote, which is the thing worth seeing when an answer is
+      // grounded in the wrong decade. Server log only — the persisted feed still carries
+      // no tool arguments, and this is a per-tool decision rather than a general licence:
+      // a search query is the model's own words, where `send_email`'s arguments will be
+      // the visitor's, and that tool will not log them.
+      console.log("agent.web_search", {
+        query,
+        results: found.results.length,
+        ms: Date.now() - startedAt,
+      });
+
       // Content for the model, artifact for the node. The node never parses the prose.
       return [renderSearch(found), { results: found.results, answer: found.answer }];
     },
