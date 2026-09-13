@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon --env-file=.env --watch src/server.js",
-    "test": "nodemon --test",
+    "test": "node --test",
     "parity": "node --env-file=.env scripts/parity-check.js"
   },
   "license": "ISC",
