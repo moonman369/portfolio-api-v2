@@ -1,0 +1,26 @@
+node_modules
+npm-debug.log*
+
+# Secrets — never copy a live .env into the build context.
+.env
+.env.*
+!.env.example
+
+# VCS / tooling
+.git
+.github
+.gitignore
+.claude
+.vscode
+.idea
+.DS_Store
+
+# Not needed at runtime
+docs/
+test/
+scripts/
+README.md
+CLAUDE.md
+Dockerfile
+.dockerignore
+docker-compose.yml

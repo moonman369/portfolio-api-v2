@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MoonMind — run viewer</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --fg: #1a1a1a;
+        --muted: #6b7280;
+        --line: #e5e7eb;
+        --panel: #f8f9fb;
+        --start: #6366f1;
+        --end: #16a34a;
+        --tool: #d97706;
+        --error: #dc2626;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0f1115;
+          --fg: #e6e8ec;
+          --muted: #9aa3b2;
+          --line: #262a33;
+          --panel: #161a21;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 2rem 1.25rem 4rem;
+        background: var(--bg);
+        color: var(--fg);
+        font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      main { max-width: 62rem; margin: 0 auto; }
+      h1 { font-size: 1.25rem; margin: 0 0 0.25rem; }
+      p.lede { margin: 0 0 1.5rem; color: var(--muted); }
+      form { display: grid; gap: 0.75rem; margin-bottom: 1.5rem; }
+      .row { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+      .row > * { flex: 1 1 12rem; }
+      label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 0.25rem; }
+      input, textarea, button {
+        font: inherit;
+        color: inherit;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 0.55rem 0.7rem;
+        width: 100%;
+      }
+      textarea { min-height: 4.5rem; resize: vertical; }
+      button {
+        cursor: pointer;
+        font-weight: 600;
+        background: var(--fg);
+        color: var(--bg);
+        border-color: var(--fg);
+      }
+      button[disabled] { opacity: 0.55; cursor: progress; }
+      .actions { display: flex; gap: 0.75rem; align-items: end; }
+      .actions button { flex: 0 0 9rem; }
+
+      .meta {
+        display: flex;
+        gap: 1.25rem;
+        flex-wrap: wrap;
+        font-size: 0.82rem;
+        color: var(--muted);
+        border-top: 1px solid var(--line);
+        padding-top: 0.9rem;
+        margin-bottom: 0.9rem;
+      }
+      .meta code { color: var(--fg); }
+
+      ol.steps { list-style: none; margin: 0 0 1.5rem; padding: 0; display: grid; gap: 1px; }
+      ol.steps li {
+        display: grid;
+        grid-template-columns: 2.6rem 4.2rem 9rem 1fr 5rem;
+        gap: 0.75rem;
+        align-items: baseline;
+        padding: 0.5rem 0.6rem;
+        background: var(--panel);
+        font-size: 0.88rem;
+      }
+      ol.steps li:first-child { border-radius: 8px 8px 0 0; }
+      ol.steps li:last-child { border-radius: 0 0 8px 8px; }
+      .seq { color: var(--muted); font-variant-numeric: tabular-nums; }
+      .type { font-weight: 700; font-size: 0.72rem; letter-spacing: 0.04em; text-transform: uppercase; }
+      .type.start { color: var(--start); }
+      .type.end { color: var(--end); }
+      .type.tool { color: var(--tool); }
+      .type.error { color: var(--error); }
+      .node { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+      .summary { color: var(--muted); word-break: break-word; }
+      .at { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; font-size: 0.78rem; }
+
+      .answer {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 1rem 1.1rem;
+        background: var(--panel);
+        white-space: pre-wrap;
+      }
+      .answer h2 { margin: 0 0 0.6rem; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+      .failed { color: var(--error); }
+      .hidden { display: none; }
+    </style>
+  </head>
+
+  <body>
+    <main>
+      <h1>MoonMind run viewer</h1>
+      <p class="lede">
+        Posts to <code>/api/v1/moonmind/runs</code>, then polls
+        <code>/api/v1/moonmind/runs/:runId?since=</code> and appends whatever is new.
+        A Phase 4 test page — not part of the product surface.
+      </p>
+
+      <form id="ask">
+        <div>
+          <label for="message">Question</label>
+          <textarea id="message" required placeholder="what has Ayan built with Node?"></textarea>
+        </div>
+        <div class="row">
+          <div>
+            <label for="password">Password header</label>
+            <input id="password" type="password" required autocomplete="current-password" />
+          </div>
+          <div>
+            <label for="sessionId">Session id (optional)</label>
+            <input id="sessionId" placeholder="blank starts a new thread" />
+          </div>
+          <div class="actions">
+            <button id="run" type="submit">Run</button>
+          </div>
+        </div>
+      </form>
+
+      <div id="meta" class="meta hidden"></div>
+      <ol id="steps" class="steps"></ol>
+      <section id="answerBox" class="answer hidden">
+        <h2 id="answerLabel">Answer</h2>
+        <div id="answer"></div>
+      </section>
+    </main>
+
+    <script>
+      const POLL_MS = 600;
+      const $ = (id) => document.getElementById(id);
+      const form = $("ask");
+      const stepsEl = $("steps");
+      const metaEl = $("meta");
+      const answerBox = $("answerBox");
+
+      // The password is a header, so it lives here rather than in the URL. sessionStorage
+      // keeps it across reloads of this tab only.
+      $("password").value = sessionStorage.getItem("moonmind-password") ?? "";
+
+      const esc = (value) =>
+        String(value ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+      const clock = (ts) => new Date(ts).toLocaleTimeString(undefined, { hour12: false });
+
+      function appendStep(step) {
+        const li = document.createElement("li");
+        li.innerHTML =
+          `<span class="seq">${step.seq}</span>` +
+          `<span class="type ${esc(step.type)}">${esc(step.type)}</span>` +
+          `<span class="node">${esc(step.node)}</span>` +
+          `<span class="summary">${esc(step.summary)}</span>` +
+          `<span class="at">${clock(step.ts)}</span>`;
+        stepsEl.append(li);
+      }
+
+      function renderMeta(run) {
+        metaEl.classList.remove("hidden");
+        const elapsed = ((new Date(run.finishedAt ?? Date.now()) - new Date(run.startedAt)) / 1000).toFixed(1);
+        metaEl.innerHTML =
+          `<span>run <code>${esc(run.runId)}</code></span>` +
+          `<span>session <code>${esc(run.sessionId)}</code></span>` +
+          `<span>status <code>${esc(run.status)}</code></span>` +
+          `<span>route <code>${esc(run.route ?? "—")}</code></span>` +
+          `<span>docs <code>${run.documentCount}</code></span>` +
+          `<span>${elapsed}s</span>`;
+      }
+
+      function renderAnswer(run) {
+        answerBox.classList.remove("hidden");
+        const failed = run.status === "failed";
+        $("answerLabel").textContent = failed ? "Answer (a node failed)" : "Answer";
+        $("answerLabel").className = failed ? "failed" : "";
+        $("answer").textContent =
+          run.answer ?? (failed ? run.error?.message ?? "The run failed." : "No answer.");
+      }
+
+      function request(path, options = {}) {
+        return fetch(path, {
+          ...options,
+          headers: { "Content-Type": "application/json", password: $("password").value, ...options.headers },
+        });
+      }
+
+      async function poll(runId) {
+        let since = 0;
+
+        // Polling, not SSE: no proxy buffering to defeat, and the password stays a
+        // header. `since` makes each poll a plain "what's new" — reloading mid-run and
+        // asking again from 0 replays the whole feed.
+        for (;;) {
+          const response = await request(`/api/v1/moonmind/runs/${runId}?since=${since}`);
+          if (!response.ok) {
+            throw new Error(`poll failed: ${response.status}`);
+          }
+
+          const { data } = await response.json();
+          data.steps.forEach(appendStep);
+          since = data.nextSince;
+          renderMeta(data);
+
+          if (data.status !== "running") {
+            renderAnswer(data);
+            return;
+          }
+          await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+        }
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const button = $("run");
+        button.disabled = true;
+        stepsEl.replaceChildren();
+        answerBox.classList.add("hidden");
+        metaEl.classList.add("hidden");
+
+        sessionStorage.setItem("moonmind-password", $("password").value);
+
+        try {
+          const started = await request("/api/v1/moonmind/runs", {
+            method: "POST",
+            body: JSON.stringify({
+              message: $("message").value,
+              sessionId: $("sessionId").value || undefined,
+            }),
+          });
+
+          const body = await started.json();
+          if (!started.ok) {
+            throw new Error(body.message ?? `start failed: ${started.status}`);
+          }
+
+          $("sessionId").value = body.data.sessionId;
+          await poll(body.data.runId);
+        } catch (error) {
+          answerBox.classList.remove("hidden");
+          $("answerLabel").textContent = "Viewer error";
+          $("answerLabel").className = "failed";
+          $("answer").textContent = error.message;
+        } finally {
+          button.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
