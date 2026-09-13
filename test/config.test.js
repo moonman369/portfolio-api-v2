@@ -13,6 +13,7 @@ const MINIMAL_ENV = Object.freeze({
   REFRESH_SECRET: "test-secret",
   OPENAI_API_KEY: "sk-test-not-used",
   MOONMIND_PASSWORD: "test-password",
+  GEMINI_API_KEY: "gem-test-not-used",
 });
 
 function envWith(overrides) {
@@ -52,6 +53,7 @@ test("fails when a required variable is missing, naming every offender", () => {
       assert.match(error.message, /REFRESH_SECRET/);
       assert.match(error.message, /OPENAI_API_KEY/);
       assert.match(error.message, /MOONMIND_PASSWORD/);
+      assert.match(error.message, /GEMINI_API_KEY/);
       return true;
     },
   );

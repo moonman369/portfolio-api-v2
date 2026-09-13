@@ -8,6 +8,7 @@ process.env.REFRESH_PROFILE ??= "test-profile";
 process.env.REFRESH_SECRET ??= "test-secret";
 process.env.OPENAI_API_KEY ??= "sk-test-not-used";
 process.env.MOONMIND_PASSWORD ??= "test-password";
+process.env.GEMINI_API_KEY ??= "gem-test-not-used";
 
 const test = require("node:test");
 const assert = require("node:assert/strict");

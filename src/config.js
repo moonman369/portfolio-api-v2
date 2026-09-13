@@ -24,6 +24,19 @@ const DEFAULT_CORS_ORIGINS = [
 
 const nonEmpty = z.string().trim().min(1);
 const positiveInt = z.coerce.number().int().positive();
+// Ranking weights are unbounded above — a weight of 5 is legitimate — so this only
+// rejects negatives and non-numbers.
+const nonNegativeFloat = z.coerce.number().min(0);
+
+// Accepts the shapes an operator actually types into a .env file.
+//
+// Takes its fallback as an argument rather than using `.default()`: a zod default is fed
+// back through the inner schema, so a boolean default would fail this string enum.
+const booleanFlag = (fallback) =>
+  z
+    .enum(["true", "1", "yes", "on", "false", "0", "no", "off"])
+    .optional()
+    .transform((value) => (value === undefined ? fallback : ["true", "1", "yes", "on"].includes(value)));
 
 const originList = z
   .string()
@@ -54,6 +67,11 @@ const envSchema = z.object({
   // LangGraph checkpointer storage — conversation state, keyed by thread_id.
   MONGO_CHECKPOINT_COLLECTION: nonEmpty.default("moonmind_checkpoints"),
   MONGO_CHECKPOINT_WRITES_COLLECTION: nonEmpty.default("moonmind_checkpoint_writes"),
+  // The vector collection and its Atlas index. All three names must match what the
+  // existing vectors were written under, or retrieval silently returns nothing.
+  MONGO_VECTOR_COLLECTION: nonEmpty.default("moonmind_documents_v3"),
+  MONGO_VECTOR_INDEX: nonEmpty.default("vector_index"),
+  MONGO_VECTOR_FIELD: nonEmpty.default("embedding"),
 
   // ---- GitHub stats refresh ---------------------------------------------
   GITHUB_PAT: nonEmpty,
@@ -96,6 +114,45 @@ const envSchema = z.object({
   MOONMIND_HISTORY_MAX_MESSAGES: positiveInt.default(20),
   MOONMIND_RUN_TIMEOUT_MS: positiveInt.default(120_000),
   MOONMIND_RECURSION_LIMIT: positiveInt.default(25),
+
+  // ---- Gemini embeddings --------------------------------------------------
+  GEMINI_API_KEY: nonEmpty,
+  // Base only — the code appends "/v1beta/models/<model>:embedContent".
+  GEMINI_BASE_URL: nonEmpty.default("https://generativelanguage.googleapis.com"),
+  GEMINI_EMBEDDING_MODEL: nonEmpty.default("gemini-embedding-2"),
+  // MUST equal numDimensions on the Atlas index, or every write is unsearchable.
+  GEMINI_EMBEDDING_DIMENSIONS: positiveInt.default(768),
+  GEMINI_TIMEOUT_MS: positiveInt.default(30_000),
+  GEMINI_MAX_RETRIES: positiveInt.default(5),
+  GEMINI_RETRY_BASE_MS: positiveInt.default(500),
+  GEMINI_MAX_BACKOFF_MS: positiveInt.default(20_000),
+  // Character budget for the whole embedded text, prefix included.
+  GEMINI_MAX_INPUT_CHARS: positiveInt.default(28_000),
+
+  // ---- Retrieval ----------------------------------------------------------
+  MOONMIND_VECTOR_NUM_CANDIDATES: positiveInt.default(150),
+  MOONMIND_RRF_K: positiveInt.default(60),
+  MOONMIND_FINAL_DOCUMENT_LIMIT: positiveInt.default(10),
+  MOONMIND_RETRIEVAL_CANDIDATE_LIMIT: positiveInt.default(30),
+  MOONMIND_RRF_WEIGHT_SEMANTIC: nonNegativeFloat.default(1),
+  MOONMIND_RRF_WEIGHT_KEYWORD: nonNegativeFloat.default(1),
+  MOONMIND_RRF_WEIGHT_METADATA: nonNegativeFloat.default(0.5),
+  MOONMIND_RANK_IMPACT_WEIGHT: nonNegativeFloat.default(0),
+  MOONMIND_RANK_VERIFIED_WEIGHT: nonNegativeFloat.default(0),
+  MOONMIND_MIN_SEMANTIC_SCORE: z.coerce.number().min(0).max(1).default(0),
+  MOONMIND_RERANK_ENABLED: booleanFlag(false),
+  MOONMIND_RERANK_CANDIDATES: positiveInt.default(20),
+  MOONMIND_DECOMPOSE_ENABLED: booleanFlag(false),
+  MOONMIND_DECOMPOSE_MAX_SUBQUERIES: positiveInt.default(3),
+  // The old service's keyword arm was unreachable (its prompt hard-coded it off), so
+  // this stays off by default to keep retrieval behaviour comparable. Note the
+  // collection has no text index: enabling it means a regex collection scan.
+  MOONMIND_KEYWORD_ENABLED: booleanFlag(false),
+
+  // ---- Document ingestion -------------------------------------------------
+  MOONMIND_SUMMARY_MIN_SENTENCES: positiveInt.default(3),
+  MOONMIND_SUMMARY_MAX_SENTENCES: positiveInt.default(6),
+  MOONMIND_ENFORCE_SUMMARY_SENTENCE_RANGE: booleanFlag(true),
 });
 
 function deepFreeze(value) {
@@ -142,6 +199,9 @@ function loadConfig(env) {
       timeoutMs: raw.MONGO_TIMEOUT_MS,
       checkpointCollection: raw.MONGO_CHECKPOINT_COLLECTION,
       checkpointWritesCollection: raw.MONGO_CHECKPOINT_WRITES_COLLECTION,
+      vectorCollection: raw.MONGO_VECTOR_COLLECTION,
+      vectorIndex: raw.MONGO_VECTOR_INDEX,
+      vectorField: raw.MONGO_VECTOR_FIELD,
     },
     github: {
       token: raw.GITHUB_PAT,
@@ -181,6 +241,45 @@ function loadConfig(env) {
       historyMaxMessages: raw.MOONMIND_HISTORY_MAX_MESSAGES,
       runTimeoutMs: raw.MOONMIND_RUN_TIMEOUT_MS,
       recursionLimit: raw.MOONMIND_RECURSION_LIMIT,
+    },
+    gemini: {
+      apiKey: raw.GEMINI_API_KEY,
+      baseUrl: raw.GEMINI_BASE_URL,
+      model: raw.GEMINI_EMBEDDING_MODEL,
+      dimensions: raw.GEMINI_EMBEDDING_DIMENSIONS,
+      timeoutMs: raw.GEMINI_TIMEOUT_MS,
+      maxRetries: raw.GEMINI_MAX_RETRIES,
+      retryBaseMs: raw.GEMINI_RETRY_BASE_MS,
+      maxBackoffMs: raw.GEMINI_MAX_BACKOFF_MS,
+      maxInputChars: raw.GEMINI_MAX_INPUT_CHARS,
+    },
+    retrieval: {
+      numCandidates: raw.MOONMIND_VECTOR_NUM_CANDIDATES,
+      rrfK: raw.MOONMIND_RRF_K,
+      finalDocumentLimit: raw.MOONMIND_FINAL_DOCUMENT_LIMIT,
+      candidateLimit: raw.MOONMIND_RETRIEVAL_CANDIDATE_LIMIT,
+      rrfWeights: {
+        semantic: raw.MOONMIND_RRF_WEIGHT_SEMANTIC,
+        keyword: raw.MOONMIND_RRF_WEIGHT_KEYWORD,
+        metadata: raw.MOONMIND_RRF_WEIGHT_METADATA,
+      },
+      impactWeight: raw.MOONMIND_RANK_IMPACT_WEIGHT,
+      verifiedWeight: raw.MOONMIND_RANK_VERIFIED_WEIGHT,
+      minSemanticScore: raw.MOONMIND_MIN_SEMANTIC_SCORE,
+      rerankEnabled: raw.MOONMIND_RERANK_ENABLED,
+      rerankCandidates: raw.MOONMIND_RERANK_CANDIDATES,
+      decomposeEnabled: raw.MOONMIND_DECOMPOSE_ENABLED,
+      decomposeMaxSubqueries: raw.MOONMIND_DECOMPOSE_MAX_SUBQUERIES,
+      keywordEnabled: raw.MOONMIND_KEYWORD_ENABLED,
+    },
+    documents: {
+      summaryMinSentences: raw.MOONMIND_SUMMARY_MIN_SENTENCES,
+      // Never below the minimum, mirroring the old service's clamp.
+      summaryMaxSentences: Math.max(
+        raw.MOONMIND_SUMMARY_MIN_SENTENCES,
+        raw.MOONMIND_SUMMARY_MAX_SENTENCES,
+      ),
+      enforceSummarySentenceRange: raw.MOONMIND_ENFORCE_SUMMARY_SENTENCE_RANGE,
     },
   });
 }
