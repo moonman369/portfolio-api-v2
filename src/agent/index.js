@@ -13,11 +13,11 @@ const { ROUTES, PER_TURN_RESET } = require("./state");
 const { createRouterNode } = require("./nodes/router");
 const { createGenerateNode } = require("./nodes/generate");
 const { createStatsNode, createStatsAndDocsNode } = require("./nodes/stats");
+const { createAboutMeNode } = require("./nodes/about-me");
 const { refusal, listCapabilities, makeStubNode } = require("./nodes/simple");
 
-// Routes whose real implementation lands in a later phase (3b, 5, 6b, 7).
+// Routes whose real implementation lands in a later phase (5, 6b, 7).
 const STUBBED_ROUTES = Object.freeze([
-  "about_me",
   "tech_web",
   "complex",
   "book_catchup",
@@ -37,8 +37,8 @@ function createNodes() {
     nodes[route] = makeStubNode(route);
   });
 
-  // stats_and_docs composes the other two rather than reimplementing either, so Phase 3b
-  // only has to replace `about_me` for the mixed route to become complete.
+  // stats_and_docs composes the other two rather than reimplementing either.
+  nodes.about_me = createAboutMeNode();
   nodes.stats = createStatsNode();
   nodes.stats_and_docs = createStatsAndDocsNode({
     statsNode: nodes.stats,
@@ -70,7 +70,8 @@ async function getCompiledGraph() {
  *
  * @param {{ sessionId: string, message: string }} turn
  * @param {{ graph?: object }} [deps] Injected compiled graph, for tests and evals.
- * @returns {Promise<{sessionId, runId, route, routeConfidence, answer, error}>}
+ * @returns {Promise<{sessionId, runId, route, routeConfidence, answer, documents,
+ *   statsPayload, error}>}
  */
 async function runTurn({ sessionId, message }, deps = {}) {
   const { moonmind } = getConfig();
@@ -100,6 +101,8 @@ async function runTurn({ sessionId, message }, deps = {}) {
     route: result.route ?? null,
     routeConfidence: result.routeConfidence ?? 0,
     answer: result.finalAnswer ?? null,
+    documents: result.documents ?? [],
+    statsPayload: result.statsPayload ?? null,
     error: result.error ?? null,
   };
 }

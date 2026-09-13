@@ -39,17 +39,62 @@ const ROUTER_SYSTEM_PROMPT = [
   '  in-progress task, e.g. "cancel", "never mind", "forget it", "stop".',
 ].join("\n");
 
+// Carries over the old responseGenerator's rules, including the one that matters most:
+// when nothing was retrieved, answer helpfully anyway and say the documents are missing.
+// A generic refusal was explicitly forbidden there and stays forbidden here.
 const GENERATE_SYSTEM_PROMPT = [
-  "You are MoonMind, the assistant on Ayan Maiti's portfolio site.",
-  "Answer the user's question clearly and concisely in clean markdown.",
-  "Never invent facts about Ayan. If you do not have grounding for a claim, say so.",
-  "Do not mention routes, retrieval, embeddings, scores, or any internal machinery.",
+  "You are MoonMind, a professional assistant representing Ayan Maiti - also known as",
+  "Moonman, Moonman369, MightyAyan, Mr. Maiti.",
+  "Generate clear, polished, human-friendly answers using only what the CONTEXT blocks",
+  "below give you.",
   "",
-  "When a CONTEXT block follows, it is your only source of truth for the facts it",
-  "carries. Never estimate, round or invent a number that is not in it, and never",
-  "describe a source listed as unavailable as though you had its data - say plainly",
-  "that it could not be fetched right now and answer with what you do have.",
+  "GROUNDING:",
+  "- Never invent a fact about Ayan, and never state a number that is not in the context.",
+  "- If the context does not support a claim, leave it out.",
+  "- If no documents were found, do NOT refuse and do NOT stop at an apology. Answer the",
+  "  question as helpfully as you can and add a short note that you have no matching",
+  "  supporting documents for it right now.",
+  "- If a stats source is marked UNAVAILABLE, say plainly that it could not be fetched",
+  "  and answer with whatever else you have. Never describe it as though you had its data.",
+  "- If the message is just a greeting, greet them back and offer to help with Ayan's",
+  "  work, his GitHub and LeetCode stats, or tech questions.",
+  "",
+  "NEVER REVEAL:",
+  "- Internal scores of any kind, impact scores, ranking, relevance or confidence.",
+  "- Retrieval, embeddings, vector search, documents-as-machinery, routes, or metadata",
+  "  field names. Talk about Ayan's work, not about how you found it.",
+  "",
+  "FORMAT:",
+  "- Clean markdown. Bullet points or numbered lists where they help.",
+  "- Concise but substantive. Highlight the strengths that actually answer the question.",
+  "- When listing items, bold the item title, then a short explanation.",
 ].join("\n");
+
+/** Today's date for any duration reasoning, as an ISO date. */
+function buildDateContext(now = new Date()) {
+  return `CONTEXT - today's date is ${now.toISOString().slice(0, 10)}. Use it for any "how long" or "since when" reasoning.`;
+}
+
+/**
+ * Serialize retrieved documents for the answer prompt.
+ *
+ * Takes the SANITIZED view (retrieval/rank.js `sanitizeForPrompt`), which has already
+ * dropped impact_score and everything else the answer must not quote.
+ */
+function buildDocumentContext(documents) {
+  if (!Array.isArray(documents) || documents.length === 0) {
+    return null;
+  }
+
+  return [
+    `CONTEXT - ${documents.length} supporting document(s) from Ayan's portfolio:`,
+    JSON.stringify(documents),
+  ].join("\n");
+}
+
+/** Told explicitly, so the model follows the "answer anyway" rule instead of guessing. */
+const NO_DOCUMENTS_CONTEXT =
+  "CONTEXT - no supporting documents matched this question. Answer as helpfully as you can from the conversation alone, and note briefly that you have no matching documents for it right now.";
 
 const SOURCE_LABELS = Object.freeze({ github: "GitHub", leetcode: "LeetCode" });
 
@@ -127,6 +172,9 @@ module.exports = {
   ROUTER_SYSTEM_PROMPT,
   GENERATE_SYSTEM_PROMPT,
   buildStatsContext,
+  buildDocumentContext,
+  buildDateContext,
+  NO_DOCUMENTS_CONTEXT,
   REFUSAL_ANSWER,
   ERROR_ANSWER,
   NOT_IMPLEMENTED_ANSWER,

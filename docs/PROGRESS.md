@@ -84,7 +84,10 @@ arm returns the same top-k ids as the old code against the live collection.
 `validateDocument` rejects a category/domain mismatch and a 767-length embedding. Ingestion
 routes pass a smoke test. Offline tests cover the fallbacks.
 
-### `[ ]` Phase 3b — `about_me` node
+### `[~]` Phase 3b — `about_me` node
+*Built and covered offline. `docs/evals/about_me.md` is a placeholder — the eval has
+never been run, and this phase is explicitly not done until Ayan reads it and agrees the
+quality is equivalent.*
 **Scope:** `src/agent/nodes/about-me.js` as an LCEL composition over `retrieval/`:
 decompose → fan-out per sub-query (intent → retrieve) → union → rank → rerank → write
 `documents`. Keep `DECOMPOSE_ENABLED` / `RERANK_ENABLED` from `config.js`; keep the node
@@ -466,6 +469,49 @@ prove nothing.
 5. **Carried over:** Phase 0's deploy and parity run, Phase 1's `router-eval`, Phase 2's
    `stats-eval` — all still unrun.
 
+### Phase 3b — about_me node — 2026-09-13
+
+**Shipped.** The `about_me` branch and full answer synthesis. 248 offline tests pass
+(18 new). The mixed `stats_and_docs` route is now complete — it returns stats **and**
+documents in one answer, closing Phase 2 open item 3.
+
+**Files.**
+- `src/agent/nodes/about-me.js` (~88 lines) — an LCEL `RunnableSequence` of three named
+  steps that delegates the pipeline to `retrieval/`.
+- `src/agent/nodes/generate.js` — full synthesis from sanitized documents plus an
+  optional stats payload.
+- `src/agent/prompts.js` — `GENERATE_SYSTEM_PROMPT` rewritten to the old
+  responseGenerator's rules, plus `buildDocumentContext`, `buildDateContext` and
+  `NO_DOCUMENTS_CONTEXT`.
+- `src/agent/index.js` — `about_me` off the stub list and wired.
+- `src/http/chat.js` — the response now carries `data.documents`.
+- `scripts/about-me-eval.js`, `docs/evals/about_me.md` (placeholder).
+- `test/agent/about-me.test.js`.
+
+**Env vars.** None added; `.env.example` and `config.js` still list the same 66.
+
+**Verified end to end with fakes.** A full graph run confirms `about_me` writes
+`documents`, the sanitized view reaches the prompt, and neither `impact_score` nor
+`summary_for_embedding` leaks into the model's context. The `stats_and_docs` run carries
+three context blocks — date, documents, stats.
+
+**Deviations.** Three, recorded below (32-34).
+
+**Open items.**
+1. **`docs/evals/about_me.md` is a placeholder — the eval has never been run.** This is
+   the outstanding "Done when", and it ends with **your** judgement, not a script's:
+   `node --env-file=.env scripts/about-me-eval.js --old <old-host> --new <new-host>`.
+   Read Q9 (nothing should match — the answer must stay helpful, not refuse) and Q10
+   (both halves present) especially.
+2. **`MOONMIND_DECOMPOSE_ENABLED` and `MOONMIND_RERANK_ENABLED` are still off**, matching
+   the old service's defaults so the eval compares like with like. Question 8 is the
+   multi-part case to re-run with decomposition on once the baseline is agreed.
+3. **The chat response shape still differs from the old one.** It now carries
+   `data.documents` in the old shape, but the answer is `data.answer` where the old was
+   `data.summary`. The frontend mapping belongs in Phase 8's `CUTOVER.md`.
+4. **Carried over:** Phase 0's deploy and parity run, Phase 1's `router-eval`, Phase 2's
+   `stats-eval`, Phase 3a's `retrieval-parity` — four scripted checks, none run.
+
 ---
 
 ## Decisions
@@ -757,3 +803,44 @@ with the reason. Append as they arise.)*
     exactly one responsibility and splitting it would undercut "the ONLY reader of
     process.env". `rank.js` (251) — one line over. Flagged for the Phase 8 audit rather
     than resolved unilaterally.
+
+### Phase 3b decisions — 2026-09-13
+
+- **The node delegates to `retrieve()` rather than re-composing the pipeline.** The
+  brief describes the LCEL shape (decompose → fan-out → union → rank → rerank) and also
+  says "keep the node small — the logic already lives in `retrieval/`". Re-expressing the
+  stages in the node would have put that logic in two places and bypassed the single
+  entry point Phase 7's tools are meant to share. The node supplies models, calls
+  `retrieve()`, and maps the result onto state.
+- **It is still an LCEL `RunnableSequence`, of three named steps.** Not ceremony: Phase 4
+  feeds the run viewer from `.streamEvents()`, and named runnables (`about_me.prepare`,
+  `about_me.retrieve`, `about_me.to_state`) surface there as steps instead of one opaque
+  `about_me` blob. The node itself stays a plain async function per ARCHITECTURE.md §4.
+- **Models are built per enabled stage.** `decompose` and `rerank` models are only
+  constructed when their flags are on, so a disabled stage costs nothing and falls to its
+  deterministic path in `retrieval/`.
+- **Documents are sanitized inside `generate`, not by the node.** `state.documents` keeps
+  the full ranked records for the API response and the Phase 4 feed, while the prompt only
+  ever sees `sanitizeForPrompt`'s output. One place decides what the model may read.
+- **The "no documents" context block is only added when there was genuinely nothing.**
+  A stats-only turn has no documents by design and must not be told its documents are
+  missing — that would push the model into an apology it has no reason to make.
+- **`data.documents` returns in the old shape** (`summary_for_embedding` stripped,
+  `content_full` always present). The eval needs ids to compute overlap, and it keeps the
+  frontend's document rendering working at cutover.
+
+## Phase 3b deviations from LLD
+
+32. **Today's date reaches the prompt as an ISO date.** *Why:* the old response prompt
+    interpolated `Date.now()` — raw epoch milliseconds — as "today's date", so every
+    duration question was reasoned against a meaningless number
+    (`OLD_REPO_MAP.md` §10.34). A test asserts no epoch timestamp appears.
+33. **`about_me` writes only `documents`; it never writes `finalAnswer`.** *Why:* the old
+    pipeline generated the answer inside the retrieval flow. Keeping synthesis in
+    `generate` is what lets `stats_and_docs` reuse this node unchanged and answer a mixed
+    question once, from both halves.
+34. **The answer prompt is assembled from discrete CONTEXT blocks** (date, documents,
+    stats) rather than one `JSON.stringify` of the whole payload as the old service did.
+    *Why:* each block is independently testable, the absence of one is meaningful, and the
+    model is told in words when a source is unavailable instead of having to infer it from
+    a null.

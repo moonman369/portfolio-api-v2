@@ -25,6 +25,24 @@ function buildBodySchema(maxMessageChars) {
     });
 }
 
+/**
+ * Shape retrieved documents for the response.
+ *
+ * Mirrors the old service's contract: `summary_for_embedding` is dropped (it is
+ * keyword soup meant for the embedder, not for a reader) and `content_full` is always
+ * present, null when the document has none.
+ */
+function toResponseDocuments(documents) {
+  if (!Array.isArray(documents)) {
+    return [];
+  }
+
+  return documents.map((document) => {
+    const { summary_for_embedding, ...rest } = document ?? {};
+    return { ...rest, content_full: rest.content_full ?? null };
+  });
+}
+
 function createChatRouter() {
   const { moonmind } = getConfig();
   const bodySchema = buildBodySchema(moonmind.maxMessageChars);
@@ -55,6 +73,7 @@ function createChatRouter() {
         runId: turn.runId,
         route: turn.route,
         answer: turn.answer,
+        documents: toResponseDocuments(turn.documents),
       },
     });
   });

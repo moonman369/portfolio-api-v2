@@ -107,11 +107,18 @@ test("the production node set covers router, generate and every route", () => {
 test("only the phases still to come are stubbed", () => {
   const live = ROUTES.filter((route) => !STUBBED_ROUTES.includes(route));
 
-  // Phase 1 shipped refusal + list_capabilities; Phase 2 adds the two stats routes.
-  // Update this as each later phase lands — it is the tripwire for a forgotten stub.
-  assert.deepEqual(live.sort(), ["list_capabilities", "refusal", "stats", "stats_and_docs"]);
+  // Phase 1: refusal + list_capabilities. Phase 2: the two stats routes.
+  // Phase 3b: about_me. Update as each later phase lands — this is the tripwire for a
+  // forgotten stub.
+  assert.deepEqual(live.sort(), [
+    "about_me",
+    "list_capabilities",
+    "refusal",
+    "stats",
+    "stats_and_docs",
+  ]);
   assert.deepEqual(
     [...STUBBED_ROUTES].sort(),
-    ["about_me", "book_catchup", "complex", "send_mail", "tech_web"],
+    ["book_catchup", "complex", "send_mail", "tech_web"],
   );
 });
