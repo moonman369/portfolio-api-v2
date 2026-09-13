@@ -28,13 +28,19 @@ container, so there is no `.env` file to read.
 
 ## Endpoints
 
+Interactive docs at **`/api/docs`**; the OpenAPI 3.0 document itself at
+**`/api/openapi.json`** — point Postman, Insomnia or a client generator at that.
+
 | Method | Path | Auth |
 |---|---|---|
 | GET | `/health` | none |
 | GET | `/` | none |
+| GET | `/api/docs` · `/api/openapi.json` | none |
 | GET | `/api/v1/github` | none |
 | GET | `/api/v1/leetcode/:username` | none |
 | GET | `/api/v1/refresh?secret=…` | `secret` query parameter, rate limited |
+| POST | `/api/v1/moonmind/chat` | `password` header |
+| — | six ingestion routes under `/api/v1/moonmind` | `password` header |
 
 `/github` reads a cached document; `/refresh` is what recomputes it from the GitHub API.
 

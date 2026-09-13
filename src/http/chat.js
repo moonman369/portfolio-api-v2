@@ -81,4 +81,4 @@ function createChatRouter() {
   return router;
 }
 
-module.exports = { createChatRouter };
+module.exports = { createChatRouter, buildBodySchema, toResponseDocuments };

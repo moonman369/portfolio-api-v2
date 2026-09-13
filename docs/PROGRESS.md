@@ -860,3 +860,35 @@ with the reason. Append as they arise.)*
   with the symptom that calls for it. It remains process-global because the driver
   resolves through the global `dns` module, so a scoped `dns.Resolver` would not affect
   it; that constraint is noted in the code.
+
+### Out-of-band: OpenAPI docs — 2026-09-13
+
+- **Swagger is back, generated rather than hand-written — reversing Leave-behind §10.8 in
+  substance but not in reasoning.** That item did not say "no API docs"; it said the old
+  `src/swagger.js` hand-duplicated schemas that then drifted from the code, and concluded
+  "if API docs are wanted, generate them from the same zod schemas that validate". That is
+  what `src/http/openapi.js` does: `DocumentPayload` and `ChatRequest` are converted from
+  the zod schemas the routes actually validate against, so the complex one — 78
+  subcategory values, nested nullable metadata — cannot disagree with the validator. A
+  test asserts all 78 values are present, which a retyped schema would not have.
+- **The drift guard the old setup lacked.** `src/http/app.js` now declares its mount table
+  once and exports `listRoutes()`; `test/http/openapi.test.js` diffs that inventory
+  against the spec in both directions, so a new route with no documentation fails the
+  suite, and so does a documented path that is not mounted. The old service's
+  `GithubResponse` claimed an array where the handler returned an object; there is now a
+  test asserting exactly that shape.
+- **One new dependency: `zod-to-json-schema` (3.25.2).** Zero runtime dependencies,
+  peer-depends on the zod already present. `zod/v4`'s built-in `toJSONSchema` is available
+  on the installed 3.25.76 but cannot consume v3-API schemas, which is what ours are.
+- **Swagger UI is loaded from a CDN, not vendored.** `swagger-ui-express` would have been
+  a second dependency plus several megabytes in the image for what is a convenience
+  wrapper. The durable artifact is the spec at `/api/openapi.json`; the rendered page at
+  `/api/docs` is a nicety. Trade-off: the docs page needs outbound internet, the spec
+  does not.
+- **`/api/docs` keeps the old service's path**, so any existing bookmark still lands on
+  API documentation.
+- **`src/http/openapi.js` is 406 lines**, over the ~250 guideline and the fourth file to
+  exceed it (see Deviation 31). It is declarative spec data with a single responsibility,
+  and splitting a document across files makes it harder to read rather than easier — but
+  four exceptions is a pattern, not an exception. Worth a deliberate decision at the
+  Phase 8 structure audit rather than another case-by-case note.
