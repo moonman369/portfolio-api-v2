@@ -38,17 +38,22 @@ const booleanFlag = (fallback) =>
     .optional()
     .transform((value) => (value === undefined ? fallback : ["true", "1", "yes", "on"].includes(value)));
 
+const csv = (raw) =>
+  raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
 const originList = z
   .string()
   .optional()
-  .transform((raw) =>
-    raw === undefined
-      ? DEFAULT_CORS_ORIGINS
-      : raw
-          .split(",")
-          .map((origin) => origin.trim())
-          .filter(Boolean),
-  );
+  .transform((raw) => (raw === undefined ? DEFAULT_CORS_ORIGINS : csv(raw)));
+
+/** A comma-separated list that defaults to empty. */
+const optionalList = z
+  .string()
+  .optional()
+  .transform((raw) => (raw === undefined ? [] : csv(raw)));
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -64,6 +69,11 @@ const envSchema = z.object({
   MONGO_STATS_COLLECTION: nonEmpty.default("gitStatsArchive"),
   MONGO_STATS_DOC_ID: nonEmpty.default("github_stats"),
   MONGO_TIMEOUT_MS: positiveInt.default(10_000),
+  // Optional DNS override for the SRV lookup `mongodb+srv://` performs before it can
+  // reach Atlas at all. Set it when the machine's resolver does not answer SRV queries
+  // — the symptom is `querySrv ECONNREFUSED`, which looks like a connection failure but
+  // happens before any connection is attempted. Empty means "use the system resolver".
+  MONGO_DNS_SERVERS: optionalList,
   // LangGraph checkpointer storage — conversation state, keyed by thread_id.
   MONGO_CHECKPOINT_COLLECTION: nonEmpty.default("moonmind_checkpoints"),
   MONGO_CHECKPOINT_WRITES_COLLECTION: nonEmpty.default("moonmind_checkpoint_writes"),
@@ -197,6 +207,7 @@ function loadConfig(env) {
       statsCollection: raw.MONGO_STATS_COLLECTION,
       statsDocId: raw.MONGO_STATS_DOC_ID,
       timeoutMs: raw.MONGO_TIMEOUT_MS,
+      dnsServers: raw.MONGO_DNS_SERVERS,
       checkpointCollection: raw.MONGO_CHECKPOINT_COLLECTION,
       checkpointWritesCollection: raw.MONGO_CHECKPOINT_WRITES_COLLECTION,
       vectorCollection: raw.MONGO_VECTOR_COLLECTION,

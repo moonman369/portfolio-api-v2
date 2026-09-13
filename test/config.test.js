@@ -150,3 +150,10 @@ test("marks production explicitly", () => {
 test("rejects an unknown NODE_ENV", () => {
   assert.throws(() => loadConfig(envWith({ NODE_ENV: "staging" })), /NODE_ENV/);
 });
+
+test("MONGO_DNS_SERVERS is empty by default and parsed as a list when set", () => {
+  assert.deepEqual(loadConfig(MINIMAL_ENV).mongo.dnsServers, []);
+
+  const overridden = loadConfig(envWith({ MONGO_DNS_SERVERS: "8.8.8.8, 1.1.1.1 ,," }));
+  assert.deepEqual(overridden.mongo.dnsServers, ["8.8.8.8", "1.1.1.1"]);
+});

@@ -844,3 +844,19 @@ with the reason. Append as they arise.)*
     *Why:* each block is independently testable, the absence of one is meaningful, and the
     model is told in words when a source is unavailable instead of having to infer it from
     a null.
+
+### Out-of-band fix — 2026-09-13
+
+- **`MONGO_DNS_SERVERS` added, partially reversing Leave-behind item §10.14.** The old
+  service called `dns.setServers(["8.8.8.8","1.1.1.1"])` at import time in `mongo.js`,
+  and its docker-compose set `dns:` as well. I dropped the code as an import-time side
+  effect mutating process-global DNS — correct about the *implementation*, wrong to
+  assume the *capability* was unnecessary. It exists because `mongodb+srv://` does an SRV
+  lookup before it can reach Atlas, and a resolver that does not answer SRV queries fails
+  it with `querySrv ECONNREFUSED` — which reads like a connection or credential problem
+  but happens before any connection is attempted. Hit for real on first local run.
+  The capability is back, but opt-in (empty by default), applied in `db.js` at connect
+  time rather than on import, logged when it engages, and documented in `.env.example`
+  with the symptom that calls for it. It remains process-global because the driver
+  resolves through the global `dns` module, so a scoped `dns.Resolver` would not affect
+  it; that constraint is noted in the code.

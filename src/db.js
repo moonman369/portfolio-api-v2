@@ -7,6 +7,7 @@
 // ended up maintaining two separate clients. One non-strict client serves both the
 // stats read path and the vector search landing in Phase 3a.
 
+const dns = require("node:dns");
 const { MongoClient } = require("mongodb");
 const { getConfig } = require("./config");
 
@@ -14,8 +15,29 @@ let client = null;
 let database = null;
 let connecting = null;
 
+/**
+ * Point the resolver at explicit DNS servers, when configured.
+ *
+ * `mongodb+srv://` does an SRV lookup before it can reach Atlas, and a resolver that
+ * does not answer SRV queries fails it with `querySrv ECONNREFUSED` — which reads like a
+ * connection problem but happens before any connection is attempted.
+ *
+ * This is process-global because the driver resolves through the global `dns` module, so
+ * a scoped `dns.Resolver` would not affect it. It is opt-in and applied here at connect
+ * time rather than as an import side effect, which is what made the old service's
+ * unconditional `dns.setServers()` in mongo.js worth leaving behind.
+ */
+function applyDnsOverride(servers) {
+  if (servers.length === 0) {
+    return;
+  }
+  dns.setServers(servers);
+  console.log("db.dns_override_applied", { servers });
+}
+
 async function openConnection() {
   const { mongo } = getConfig();
+  applyDnsOverride(mongo.dnsServers);
 
   const nextClient = new MongoClient(mongo.uri, {
     serverSelectionTimeoutMS: mongo.timeoutMs,
