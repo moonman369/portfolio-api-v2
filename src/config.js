@@ -82,6 +82,12 @@ const envSchema = z.object({
   MONGO_VECTOR_COLLECTION: nonEmpty.default("moonmind_documents_v3"),
   MONGO_VECTOR_INDEX: nonEmpty.default("vector_index"),
   MONGO_VECTOR_FIELD: nonEmpty.default("embedding"),
+  // The live event feed (Phase 4). Debug traces, not durable data: a TTL index drops
+  // both collections' documents once the retention window passes, so watching runs
+  // never grows the database without bound.
+  MONGO_RUNS_COLLECTION: nonEmpty.default("moonmind_runs"),
+  MONGO_RUN_STEPS_COLLECTION: nonEmpty.default("moonmind_run_steps"),
+  MOONMIND_RUN_RETENTION_DAYS: positiveInt.default(7),
 
   // ---- GitHub stats refresh ---------------------------------------------
   GITHUB_PAT: nonEmpty,
@@ -210,6 +216,9 @@ function loadConfig(env) {
       dnsServers: raw.MONGO_DNS_SERVERS,
       checkpointCollection: raw.MONGO_CHECKPOINT_COLLECTION,
       checkpointWritesCollection: raw.MONGO_CHECKPOINT_WRITES_COLLECTION,
+      runsCollection: raw.MONGO_RUNS_COLLECTION,
+      runStepsCollection: raw.MONGO_RUN_STEPS_COLLECTION,
+      runRetentionDays: raw.MOONMIND_RUN_RETENTION_DAYS,
       vectorCollection: raw.MONGO_VECTOR_COLLECTION,
       vectorIndex: raw.MONGO_VECTOR_INDEX,
       vectorField: raw.MONGO_VECTOR_FIELD,

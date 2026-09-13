@@ -26,26 +26,35 @@ src/
     auth.js              # shared password header, rate limiters
     stats.js             # /github, /leetcode, /refresh
     documents.js         # ingestion routes
-    chat.js              # /api/v1/moonmind/chat (+ run feed in Phase 4)
+    chat.js              # /api/v1/moonmind/chat + the run feed (POST /runs, GET /runs/:runId)
   stats/                 # github.js, leetcode.js — plain JS, framework-free
   documents/             # taxonomy.js, schema.js, embeddings.js, store.js — plain JS
   retrieval/             # embedder.js, plan.js, search.js, rank.js, index.js
   integrations/          # websearch.js, calendar.js, email.js — plain JS
   agent/
-    index.js             # runTurn(), streamTurn() — the only API the HTTP layer uses
+    index.js             # runTurn(), streamTurn(), startRun() — how HTTP runs the graph
     graph.js             # StateGraph wiring only
+    runs.js              # runs/steps collections behind the live event feed
     state.js
     models.js            # getModel(role)
     prompts.js           # every system prompt
     tools.js             # every tool + TOOLSETS map
     nodes/               # router.js, simple.js, stats.js, about-me.js, agents.js, generate.js
+public/                  # run-viewer.html — the only static asset (see below)
 scripts/                 # parity-check, evals, oauth, one-off migrations
 test/                    # node:test, mirrors src/
 docs/
 ```
 
-Phase 4 adds one file to this layout: `src/agent/runs.js` (the `runs`/`steps` collections
-behind the live event feed). Nothing else is added without a gate.
+Phase 4 added `src/agent/runs.js` and, by gate, the top-level `public/`. Nothing else is
+added without a gate.
+
+**`public/` is a gated exception** to the no-new-top-level-folders rule (Ayan's call,
+2026-09-13). It holds exactly one file, `run-viewer.html`: a dependency-free test page for
+the live event feed, served by `express.static` mounted last in `app.js` with directory
+indexes off, so it can never shadow a route. It is a development tool, not product
+surface — the portfolio frontend calls the API and loads nothing from here. A second file
+in `public/` is a new design question, not a free extension of this one.
 
 Files not under `src/`: `Dockerfile`, `docker-compose.yml`, `.github/workflows/deploy.yml`,
 `.env.example`, `package.json`, `CLAUDE.md`.

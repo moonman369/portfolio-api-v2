@@ -79,7 +79,10 @@ function createAboutMeNode(deps = {}) {
         return { documents: result.documents ?? [] };
       }).withConfig({ runName: "about_me.to_state" }),
     ],
-  ).withConfig({ runName: "about_me" });
+    // Deliberately unnamed. A runnable named exactly `about_me` is indistinguishable
+    // from the graph node of that name in `.streamEvents()`, which made the feed report
+    // every start and end for this node twice. The three steps above carry the names.
+  );
 
   return async function aboutMe(state, config) {
     return chain.invoke(state, config);

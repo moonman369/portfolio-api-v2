@@ -40,9 +40,26 @@ Interactive docs at **`/api/docs`**; the OpenAPI 3.0 document itself at
 | GET | `/api/v1/leetcode/:username` | none |
 | GET | `/api/v1/refresh?secret=…` | `secret` query parameter, rate limited |
 | POST | `/api/v1/moonmind/chat` | `password` header |
+| POST | `/api/v1/moonmind/runs` | `password` header |
+| GET | `/api/v1/moonmind/runs/:runId?since=` | `password` header |
+| GET | `/run-viewer.html` | none (the page asks for the password) |
 | — | six ingestion routes under `/api/v1/moonmind` | `password` header |
 
 `/github` reads a cached document; `/refresh` is what recomputes it from the GitHub API.
+
+### Watching a run
+
+`/chat` answers in one response. The two `/runs` endpoints answer the same question as a
+live step feed instead: `POST /runs` returns a `runId` while the graph is still working,
+and `GET /runs/:runId?since=<last seq seen>` returns whatever steps have been recorded
+since. Poll until `status` is no longer `running`; the final answer arrives with it.
+
+Polling rather than SSE, so there is **no Nginx change to make** — plain JSON over the
+same proxy the rest of the API uses.
+
+`/run-viewer.html` is a dependency-free page that does exactly this, for eyeballing a run
+locally or on the VM. Steps carry short derived summaries (`documents=10`,
+`answer=483 chars`) — never a retrieved document, a tool's arguments or a prompt.
 
 ## Parity against the old service
 

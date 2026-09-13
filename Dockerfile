@@ -17,6 +17,8 @@ ENV NODE_ENV=production
 COPY --chown=node:node --from=deps /app/node_modules ./node_modules
 COPY --chown=node:node package.json ./
 COPY --chown=node:node src ./src
+# The run-viewer test page for the live event feed.
+COPY --chown=node:node public ./public
 
 # Run as the non-root user shipped with the official Node image.
 USER node

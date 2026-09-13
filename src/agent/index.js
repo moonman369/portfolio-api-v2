@@ -1,15 +1,18 @@
 "use strict";
 
 // The only API the HTTP layer uses. Everything that runs the graph — the chat route,
-// the Phase 4 run feed, the eval scripts — goes through runTurn.
+// the run feed, the eval scripts — comes through here: `runTurn` for a single
+// request/response turn, `startRun`/`streamTurn` for the live event feed.
 
 const crypto = require("node:crypto");
 const { HumanMessage } = require("@langchain/core/messages");
+const { START } = require("@langchain/langgraph");
 const { MongoDBSaver } = require("@langchain/langgraph-checkpoint-mongodb");
 const { getConfig } = require("../config");
 const { getClient } = require("../db");
 const { buildGraph } = require("./graph");
 const { ROUTES, PER_TURN_RESET } = require("./state");
+const runs = require("./runs");
 const { createRouterNode } = require("./nodes/router");
 const { createGenerateNode } = require("./nodes/generate");
 const { createStatsNode, createStatsAndDocsNode } = require("./nodes/stats");
@@ -66,20 +69,14 @@ async function getCompiledGraph() {
 }
 
 /**
- * Run one conversational turn.
- *
- * @param {{ sessionId: string, message: string }} turn
- * @param {{ graph?: object }} [deps] Injected compiled graph, for tests and evals.
- * @returns {Promise<{sessionId, runId, route, routeConfidence, answer, documents,
- *   statsPayload, error}>}
+ * The input and config for one turn. Shared so `runTurn` and `streamTurn` cannot drift
+ * on the thread key, the per-turn reset, the recursion limit or the wall-clock cap.
  */
-async function runTurn({ sessionId, message }, deps = {}) {
+function buildInvocation({ sessionId, message, runId }) {
   const { moonmind } = getConfig();
-  const graph = deps.graph ?? (await getCompiledGraph());
-  const runId = crypto.randomUUID();
 
-  const result = await graph.invoke(
-    {
+  return {
+    input: {
       // Per-turn reset first, so a stale field from the checkpointed thread can never
       // survive into this turn; the real values for this turn follow.
       ...PER_TURN_RESET,
@@ -87,13 +84,18 @@ async function runTurn({ sessionId, message }, deps = {}) {
       rawQuery: message,
       messages: [new HumanMessage(message)],
     },
-    {
+    config: {
       configurable: { thread_id: sessionId, runId },
       recursionLimit: moonmind.recursionLimit,
       // Wall-clock cap for the whole run, enforced by every runnable underneath.
       signal: AbortSignal.timeout(moonmind.runTimeoutMs),
     },
-  );
+  };
+}
+
+/** The final state of a run, as the HTTP layer wants it. */
+function toTurn({ sessionId, runId, state }) {
+  const result = state ?? {};
 
   return {
     sessionId,
@@ -107,4 +109,187 @@ async function runTurn({ sessionId, message }, deps = {}) {
   };
 }
 
-module.exports = { runTurn, createNodes, getCompiledGraph, STUBBED_ROUTES, ROUTES };
+/**
+ * Run one conversational turn.
+ *
+ * @param {{ sessionId: string, message: string }} turn
+ * @param {{ graph?: object }} [deps] Injected compiled graph, for tests and evals.
+ * @returns {Promise<{sessionId, runId, route, routeConfidence, answer, documents,
+ *   statsPayload, error}>}
+ */
+async function runTurn({ sessionId, message }, deps = {}) {
+  const graph = deps.graph ?? (await getCompiledGraph());
+  const runId = crypto.randomUUID();
+  const { input, config } = buildInvocation({ sessionId, message, runId });
+
+  return toTurn({ sessionId, runId, state: await graph.invoke(input, config) });
+}
+
+// ---------------------------------------------------------------------------
+// The live event feed
+// ---------------------------------------------------------------------------
+
+/**
+ * The graph's own event stream is the event source — there is no instrumentation layer,
+ * and no node knows the feed exists. `streamEvents` reports every runnable inside a node
+ * as well as the node itself, so the label decides what reaches the feed:
+ *
+ *   - `event.name === langgraph_node` is the node boundary itself;
+ *   - `<node>.<something>` is a sub-step whose author named it, on purpose, to be
+ *     watchable — `about_me.retrieve` is the first of them. Naming a runnable is how a
+ *     node opts into the feed;
+ *   - anything else is an anonymous inner runnable (`RunnableSequence`, `RunnableLambda`)
+ *     and is dropped, or the feed would be unreadable.
+ *
+ * The root graph events carry no `langgraph_node` at all, and the root `on_chain_end` is
+ * where the complete final state arrives.
+ */
+function stepLabel(event, node) {
+  if (!node || node === START) {
+    return null;
+  }
+  if (event.name === node) {
+    return node;
+  }
+  return String(event.name ?? "").startsWith(`${node}.`) ? event.name : null;
+}
+
+/**
+ * Stream one turn as ordered steps.
+ *
+ * Yields `{ runId, seq, node, type, ts, summary }` and **returns** the turn summary, so
+ * a consumer drains the iterator for the feed and reads the final answer off the return
+ * value.
+ *
+ * A node that throws does not surface as a stream error: `withErrorBoundary` catches it
+ * and returns an update carrying `error`, which is what this reads to emit an `error`
+ * step. That is the point — the run continues to `generate` and still answers.
+ *
+ * A tool produces one step, on completion. There is no `start` counterpart: the step
+ * vocabulary has a single `tool` type, and a tool that never returns is already visible
+ * as the missing `end` on the node holding it.
+ */
+async function* streamTurn({ sessionId, message, runId }, deps = {}) {
+  const graph = deps.graph ?? (await getCompiledGraph());
+  const { input, config } = buildInvocation({ sessionId, message, runId });
+
+  let seq = 0;
+  let finalState = null;
+  // A node's boundary must appear exactly once per superstep. Nothing stops a node from
+  // naming an inner runnable after itself — about-me.js did — and `streamEvents` then
+  // reports two indistinguishable pairs. Keeping the first of each means a slip like
+  // that costs a less precise `end` summary rather than a duplicated feed. Named
+  // sub-steps are not deduplicated: a fan-out genuinely runs them more than once.
+  const boundaries = new Set();
+  const step = (node, type, summary) => ({
+    runId,
+    seq: (seq += 1),
+    node,
+    type,
+    ts: new Date(),
+    summary,
+  });
+
+  for await (const event of graph.streamEvents(input, { ...config, version: "v2" })) {
+    const node = event.metadata?.langgraph_node ?? null;
+
+    if (!node) {
+      if (event.event === "on_chain_end") {
+        finalState = event.data?.output ?? finalState;
+      }
+      continue;
+    }
+
+    if (event.event === "on_tool_end") {
+      yield step(node, "tool", runs.summarizeTool(event.name, event.data?.output));
+      continue;
+    }
+    if (event.event === "on_tool_error") {
+      yield step(node, "error", runs.summarizeTool(event.name, null));
+      continue;
+    }
+
+    const label = stepLabel(event, node);
+    if (!label) {
+      continue;
+    }
+
+    if (label === node) {
+      const boundary = `${node}:${event.metadata?.langgraph_step ?? 0}:${event.event}`;
+      if (boundaries.has(boundary)) {
+        continue;
+      }
+      boundaries.add(boundary);
+    }
+
+    if (event.event === "on_chain_start") {
+      yield step(label, "start", "");
+    } else if (event.event === "on_chain_end") {
+      // A sub-step's output is whatever that runnable returns — for `about_me.prepare`
+      // that includes the resolved config, API keys and all. `summarizeUpdate` is a
+      // whitelist rather than a serializer precisely so this stays safe: a shape it
+      // does not recognise summarizes to nothing.
+      const update = event.data?.output ?? {};
+      yield update?.error
+        ? step(label, "error", runs.summarizeError(update.error))
+        : step(label, "end", runs.summarizeUpdate(update));
+    }
+  }
+
+  return toTurn({ sessionId, runId, state: finalState });
+}
+
+/** Drain `streamTurn` into the store. Resolves with the turn, or null; never rejects. */
+async function driveRun({ sessionId, message, runId }, deps) {
+  const { store } = deps;
+  const iterator = streamTurn({ sessionId, message, runId }, deps);
+
+  try {
+    let next = await iterator.next();
+    while (!next.done) {
+      await store.recordStep(next.value, deps);
+      next = await iterator.next();
+    }
+
+    await store.finishRun({ runId, turn: next.value }, deps);
+    return next.value;
+  } catch (error) {
+    // The graph failed outside any node — a wall-clock abort or the recursion limit,
+    // neither of which the per-node boundary sees. The run is closed as failed rather
+    // than left `running` for its whole retention window, and nothing is rethrown:
+    // `POST /runs` answered long ago, so a rejection here could only be an unhandled one.
+    console.error("agent.run.failed", { runId, sessionId, message: error?.message });
+    await store.failRun({ runId, message: error?.message }, deps).catch((storeError) => {
+      console.error("agent.run.store_failed", { runId, message: storeError?.message });
+    });
+    return null;
+  }
+}
+
+/**
+ * Open a run and start it in the background.
+ *
+ * The run document is written before this resolves, so the `runId` handed back is
+ * pollable immediately — a client that polls on the next tick finds a `running` run,
+ * never a 404. `completed` is for tests and evals that want to wait; the HTTP handler
+ * ignores it, which is the entire point of the feed.
+ */
+async function startRun({ sessionId, message }, deps = {}) {
+  const store = deps.store ?? runs;
+  const runId = crypto.randomUUID();
+  const withStore = { ...deps, store };
+
+  await store.startRun({ runId, sessionId, question: message }, withStore);
+
+  return { runId, sessionId, completed: driveRun({ sessionId, message, runId }, withStore) };
+}
+
+module.exports = {
+  runTurn,
+  streamTurn,
+  startRun,
+  createNodes,
+  getCompiledGraph,
+  STUBBED_ROUTES,
+  ROUTES,
+};

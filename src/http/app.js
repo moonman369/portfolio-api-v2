@@ -6,6 +6,7 @@
 // own, so route handlers stay genuinely thin — no try/catch boilerplate and no shared
 // async-wrapper helper.
 
+const path = require("node:path");
 const express = require("express");
 const cors = require("cors");
 const { getConfig } = require("../config");
@@ -180,6 +181,11 @@ function createApp() {
   });
 
   ROUTER_MOUNTS.forEach(({ prefix, create }) => app.use(prefix, create()));
+
+  // `public/` holds exactly one thing: run-viewer.html, the Phase 4 test page for the
+  // live event feed. Mounted last and with directory indexes off, so it can never
+  // shadow a route above it — `/` stays the JSON banner.
+  app.use(express.static(path.join(__dirname, "..", "..", "public"), { index: false }));
 
   app.use(notFoundHandler);
   app.use(errorHandler);

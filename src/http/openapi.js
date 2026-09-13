@@ -12,6 +12,7 @@
 
 const { zodToJsonSchema } = require("zod-to-json-schema");
 const { documentSchema } = require("../documents/schema");
+const { STEP_TYPES, RUN_STATUSES } = require("../agent/runs");
 const { buildBodySchema } = require("./chat");
 
 const PASSWORD_SCHEME = "MoonMindPassword";
@@ -138,6 +139,58 @@ function buildComponents(maxMessageChars) {
         }),
       }),
 
+      RunAccepted: object({
+        status: str("success"),
+        data: object({ runId: str(), sessionId: str() }, ["runId", "sessionId"]),
+      }),
+
+      RunStep: object(
+        {
+          seq: int(3),
+          node: str("about_me"),
+          type: {
+            type: "string",
+            enum: [...STEP_TYPES],
+            description: "`start`/`end` bracket a node; `tool` is one tool call; `error` is a node the boundary caught.",
+          },
+          ts: str(),
+          summary: {
+            type: "string",
+            example: "documents=8",
+            description:
+              "A short derived summary — counts, lengths and enum values. Never a retrieved document, a tool's arguments or a prompt.",
+          },
+        },
+        ["seq", "node", "type", "ts", "summary"],
+      ),
+
+      RunFeed: object({
+        status: str("success"),
+        data: object({
+          runId: str(),
+          sessionId: str(),
+          status: { type: "string", enum: [...RUN_STATUSES] },
+          question: str("what has Ayan built with Node?"),
+          route: { type: "string", nullable: true, example: "about_me" },
+          answer: { type: "string", nullable: true, description: "Null until the run finishes." },
+          error: { type: "object", nullable: true, additionalProperties: true },
+          documentIds: {
+            type: "array",
+            items: str(),
+            description: "What grounded the answer. Use /chat for the documents themselves.",
+          },
+          documentCount: int(8),
+          startedAt: str(),
+          finishedAt: { type: "string", nullable: true },
+          steps: { type: "array", items: ref("RunStep") },
+          nextSince: {
+            type: "integer",
+            example: 7,
+            description: "Send this back as `since` on the next poll. Unchanged when nothing new arrived.",
+          },
+        }),
+      }),
+
       EmbeddingRegenerateResult: object({
         onlyMissing: { type: "boolean", example: false },
         processed: int(42),
@@ -241,6 +294,48 @@ function buildPaths() {
           200: { description: "Answer", ...json(ref("ChatResponse")) },
           400: errorResponse("Validation error"),
           ...unauthorized,
+        },
+      },
+    },
+
+    "/api/v1/moonmind/runs": {
+      post: {
+        tags: ["MoonMind"],
+        summary: "Start a run and watch it",
+        description:
+          "Same question as /chat, answered as a live feed instead of a single response. Returns immediately with a runId while the graph is still working; poll GET /runs/{runId} for the steps.",
+        security: secured,
+        requestBody: { required: true, ...json(ref("ChatRequest")) },
+        responses: {
+          202: { description: "Run accepted and started", ...json(ref("RunAccepted")) },
+          400: errorResponse("Validation error"),
+          ...unauthorized,
+        },
+      },
+    },
+
+    "/api/v1/moonmind/runs/{runId}": {
+      get: {
+        tags: ["MoonMind"],
+        summary: "Poll a run's steps",
+        description:
+          "Steps recorded after `since`, in order, plus the run's current status and — once finished — its answer. Poll until `status` is no longer `running`.",
+        security: secured,
+        parameters: [
+          { name: "runId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+          {
+            name: "since",
+            in: "query",
+            required: false,
+            description: "The last seq already seen. Echo back `nextSince` from the previous poll.",
+            schema: { type: "integer", minimum: 0, default: 0 },
+          },
+        ],
+        responses: {
+          200: { description: "The run and its new steps", ...json(ref("RunFeed")) },
+          400: errorResponse("runId is not a UUID, or since is not a non-negative integer"),
+          ...unauthorized,
+          404: errorResponse("No run with that id (it may have passed its retention window)"),
         },
       },
     },

@@ -84,10 +84,11 @@ arm returns the same top-k ids as the old code against the live collection.
 `validateDocument` rejects a category/domain mismatch and a 767-length embedding. Ingestion
 routes pass a smoke test. Offline tests cover the fallbacks.
 
-### `[~]` Phase 3b — `about_me` node
-*Built and covered offline. `docs/evals/about_me.md` is a placeholder — the eval has
-never been run, and this phase is explicitly not done until Ayan reads it and agrees the
-quality is equivalent.*
+### `[x]` Phase 3b — `about_me` node
+*Ticked on Ayan's explicit call (2026-09-13) so Phase 4 could start, the same way Phase 0
+was. **Its eval was never run.** `docs/evals/about_me.md` is still a placeholder and the
+"Done when" below — Ayan reading it and agreeing the quality is equivalent — has not
+happened. Open item 1 in the Phase 3b handoff entry stands.*
 **Scope:** `src/agent/nodes/about-me.js` as an LCEL composition over `retrieval/`:
 decompose → fan-out per sub-query (intent → retrieve) → union → rank → rerank → write
 `documents`. Keep `DECOMPOSE_ENABLED` / `RERANK_ENABLED` from `config.js`; keep the node
@@ -99,10 +100,14 @@ stats+docs question) against the old `/api/v1/moonmind/chat` and the new endpoin
 `docs/evals/about_me.md` (answers side by side + retrieved-id overlap), and Ayan agrees the
 quality is equivalent. An offline test covers the node with fake retrieval.
 
-### `[ ]` Phase 4 — Live event feed
-**⛔ GATE first:** always-on container, so both work — (a) `POST /runs` + polling
-`GET /runs/:id?since=`, or (b) SSE. Present the trade-offs (Nginx buffering/timeouts for
-SSE, frontend cost) and wait.
+### `[~]` Phase 4 — Live event feed
+*Built, covered offline, and watched live end to end for a stats question and an
+about_me question. Two live re-checks are outstanding — see the handoff entry's open
+items 1 and 2.*
+**⛔ GATE — settled 2026-09-13:** **(a) polling.** No Nginx buffering change to get
+wrong in prod, the `password` header survives (EventSource cannot send one), and
+resuming after a refresh is just a larger `since`. SSE stays available later over the
+same `steps` collection, so nothing here forecloses it.
 **Scope:** `agent/index.js` → `streamTurn()` on the compiled graph's `.stream()` /
 `.streamEvents()`, no separate instrumentation layer. `agent/runs.js` — `runs` / `steps`
 Mongo collections; a step is `runId, seq, node, type (start|end|tool|error), ts, summary`.
@@ -512,6 +517,100 @@ three context blocks — date, documents, stats.
 4. **Carried over:** Phase 0's deploy and parity run, Phase 1's `router-eval`, Phase 2's
    `stats-eval`, Phase 3a's `retrieval-parity` — four scripted checks, none run.
 
+### Phase 4 — Live event feed — 2026-09-13
+
+**Shipped.** A live step feed over the graph's own event stream, behind
+`POST /api/v1/moonmind/runs` + `GET /api/v1/moonmind/runs/:runId?since=`, with a
+dependency-free viewer at `/run-viewer.html`. 289 offline tests pass (28 new).
+`/api/v1/moonmind/chat` is untouched in shape and behaviour.
+
+**Files.**
+- `src/agent/runs.js` (~245 lines, new) — the `runs`/`steps` collections, and **the one
+  place that decides what a step may carry**. `summarizeUpdate` is a field whitelist, not
+  a serializer: counts, lengths and enum values only.
+- `src/agent/index.js` — `streamTurn()` (an async generator over
+  `compiledGraph.streamEvents({ version: "v2" })` that yields steps and returns the turn)
+  and `startRun()` (opens the run, then drives it in the background). `runTurn` and
+  `streamTurn` now share `buildInvocation()` and `toTurn()`, so the thread key, per-turn
+  reset, recursion limit and wall-clock cap cannot drift apart.
+- `src/http/chat.js` — the two feed endpoints. The agent and run-store modules are now
+  imported as namespaces so tests can replace one function.
+- `src/http/app.js` — `express.static` on `public/`, mounted last, indexes off.
+- `src/http/openapi.js` — `RunAccepted`, `RunStep`, `RunFeed` and both paths.
+- `src/config.js` — three new vars.
+- `src/agent/nodes/about-me.js` — one-line fix, see Deviations.
+- `public/run-viewer.html` (new, gated — see Deviations).
+- `Dockerfile` — copies `public/`.
+- `test/agent/runs.test.js`, `test/agent/stream.test.js`, `test/http/runs.test.js`.
+
+**Env vars.** Three added, all optional with defaults, bringing the total to 69:
+`MONGO_RUNS_COLLECTION` (`moonmind_runs`), `MONGO_RUN_STEPS_COLLECTION`
+(`moonmind_run_steps`), `MOONMIND_RUN_RETENTION_DAYS` (`7`). Both collections are
+TTL-indexed on that retention: these are debug traces, not durable data, so watching runs
+cannot grow the database without bound.
+
+**No new dependencies.** The feed is `streamEvents` plus the Mongo driver already present.
+
+**What a step carries.** `{ runId, seq, node, type, ts, summary }`, where `type` is
+`start | end | tool | error`. The summary is derived — `route=about_me confidence=0.80`,
+`documents=10`, `stats=github+leetcode`, `answer=483 chars`. Never a retrieved document,
+never a tool's arguments, never a prompt. Slots contribute their **key names** only, since
+slot values are visitor content. The run document holds the final answer and the
+`documentIds` that grounded it, not the documents themselves — `/chat` is where those
+live. `test/agent/runs.test.js` asserts the negatives, not just the formatting.
+
+**Verified live** against the real graph, real models and real Atlas:
+- A stats question routed to `stats_and_docs`, six ordered steps, ending in a correct
+  answer (100 repos / 468 LeetCode problems) consistent with `/github` and `/leetcode`.
+- An about_me question routed to `about_me`, ending in a grounded answer citing MoonMind
+  AI and BlinkMart.
+
+**Verified offline** (`test/agent/stream.test.js`, against a real compiled graph with fake
+nodes): ordered `start`/`end` per node; a throwing node yields an `error` step **followed
+by `generate` and a graceful answer**, not a failed run; a tool call yields exactly one
+`tool` step; anonymous inner runnables are dropped; a graph-level failure closes the run
+as `failed` rather than rejecting into an unhandled promise.
+
+**Deviations.** Three, recorded below (35-37).
+
+**Open items.**
+1. **Re-watch an about_me run live.** The first live run exposed a duplicate-step bug
+   (below, deviation 36); it is fixed and proven against the real `createAboutMeNode` and
+   in tests, but Atlas began refusing TLS handshakes
+   (`tlsv1 alert internal error`, SSL alert 80) before the fixed feed could be watched
+   live. Nothing suggests a code cause — the same build connected fine minutes earlier.
+   Re-run: `node --env-file=.env src/server.js`, open `http://127.0.0.1:8000/run-viewer.html`,
+   ask an about_me question, and confirm one `about_me` start/end pair wrapping
+   `about_me.prepare` / `about_me.retrieve` / `about_me.to_state`.
+2. **Watch an erroring node live.** Covered offline and it is the sharper half of the
+   "Done when". The cheap way to force it is a deliberately wrong `GEMINI_API_KEY` on a
+   throwaway run — `about_me` fails in the embedder, and the feed should show
+   `about_me:error` then `generate:end` with the graceful answer.
+3. **The feed is unauthenticated beyond the shared password**, exactly like `/chat`, and
+   `POST /runs` is not rate-limited. A visitor who knows the password can start runs
+   faster than they can read them, and each one costs model calls. Phase 6a is already
+   bringing "tight rate limiting" for the action routes — the limiter belongs on `/runs`
+   at the same time, not before.
+4. **Carried over, now five unrun checks:** Phase 0's deploy and parity run, Phase 1's
+   `router-eval`, Phase 2's `stats-eval`, Phase 3a's `retrieval-parity`, and Phase 3b's
+   `about-me-eval` — the last of which is the gate on Phase 3b actually being done. The
+   `.env` in this working copy is now fully populated, so every one of them is runnable;
+   the reason recorded against them in earlier phases ("no credentials here") has expired.
+5. **`npm test` is broken and has been since Phase 0** — `package.json` says
+   `nodemon --test`, not `node --test`, and `nodemon` is not a dependency. Every phase has
+   been verified with `node --test` directly. One-word fix, left alone here because it is
+   outside Phase 4's scope; say the word.
+6. **Structure check: two files now exceed the ~250-line guideline** —
+   `src/agent/index.js` (295, was 110) and `src/agent/runs.js` (273). Deliberately not
+   split: the phase brief and ARCHITECTURE.md §1 both place `runTurn`/`streamTurn`/
+   `startRun` in `index.js`, and `runs.js` is one responsibility (the feed's storage and
+   its redaction rules) where splitting would separate the whitelist from the writer that
+   depends on it. That makes **six** files over the guideline. As the Phase 3a/OpenAPI
+   note already said, six is a pattern rather than an exception — the Phase 8 structure
+   audit should either move the number or split in earnest, not keep granting one-offs.
+
+---
+
 ---
 
 ## Decisions
@@ -892,3 +991,62 @@ with the reason. Append as they arise.)*
   and splitting a document across files makes it harder to read rather than easier — but
   four exceptions is a pattern, not an exception. Worth a deliberate decision at the
   Phase 8 structure audit rather than another case-by-case note.
+
+### Phase 4 decisions — 2026-09-13
+
+- **⛔ GATE: polling, not SSE, for the feed transport.** Ayan's call. Both work on an
+  always-on container, so the deciding factors were risk and auth, not capability. SSE
+  needs `proxy_buffering off` and to survive Nginx's 60s `proxy_read_timeout` — both
+  mitigable in-app (`X-Accel-Buffering: no`, ~15s heartbeat comments), possibly with no VM
+  config change at all, but there is no Nginx in front of the dev machine, so a wrong
+  mitigation surfaces only in production. The auth cost was the clincher: `EventSource`
+  cannot set a custom header, so SSE means either moving `MOONMIND_PASSWORD` into the
+  query string — and thus into Nginx access logs and browser history — or hand-parsing
+  SSE from `fetch` + `ReadableStream`, which spends the "SSE is cheaper on the frontend"
+  argument. Polling keeps the header, needs no proxy change, and makes resume-after-reload
+  a larger `since`. **Not foreclosed:** both transports read the same `steps` collection,
+  so adding SSE later is one endpoint and no data-model change.
+- **⛔ GATE: `public/` as a new top-level folder.** Ayan's call, against
+  ARCHITECTURE.md §1's "nothing else without a gate" and the end-of-phase structure
+  check. Recorded in ARCHITECTURE.md §1 with the scope of the exception: one file, one
+  purpose, a development tool rather than product surface.
+- **The graph's own `streamEvents` is the event source; no instrumentation layer.** Per
+  LLD §10 ("custom event buses" are out of scope) and the phase brief. No node knows the
+  feed exists, which is why `stats` and `about_me` needed no changes to be watchable.
+- **`streamTurn` is an async generator that *returns* the turn summary.** Steps are the
+  yielded values and the final answer is the return value, so one function serves both
+  the feed and the answer without a second graph run or an out-parameter. `driveRun`
+  drains it with an explicit iterator loop, which is the price of that shape.
+- **Both feed collections are TTL-indexed** on `MOONMIND_RUN_RETENTION_DAYS` (7).
+  Step traces are debug data; without expiry, every question asked would be kept forever.
+- **The run document stores `documentIds`, not documents.** The feed shows *what*
+  grounded an answer; `/chat` returns the documents themselves. Keeping the corpus out of
+  the runs collection is the same instinct as the step whitelist.
+- **`POST /runs` answers 202 after the run document is written, never before.** Awaiting
+  the insert costs one round trip and removes the race where a client polls a runId that
+  does not exist yet.
+
+## Phase 4 deviations from LLD
+
+35. **A named sub-step convention: a runnable called `<node>.<something>` opts into the
+    feed under its own name.** *Why:* Phase 3b had already composed `about_me` as an LCEL
+    sequence of `about_me.prepare` / `about_me.retrieve` / `about_me.to_state`
+    specifically "so Phase 4's `.streamEvents()` feed shows named steps instead of a
+    single blob". Forwarding *every* inner runnable would be unreadable; forwarding none
+    would waste that design. Naming one is now how a node says "this part is worth
+    watching". Anonymous runnables (`RunnableSequence`, `RunnableLambda`) stay out.
+    **The safety of this rests on the whitelist:** `about_me.prepare` returns the resolved
+    config, API keys included, and summarizes to the empty string because
+    `summarizeUpdate` recognises none of its fields. A serializer would have leaked it.
+36. **Fixed in `about-me.js`: the outer chain was `.withConfig({ runName: "about_me" })`,
+    the same name as its graph node.** *Why:* `streamEvents` then reports two
+    indistinguishable `on_chain_start`/`on_chain_end` pairs for that node, and the first
+    live run showed every `about_me` step twice. The outer chain is now unnamed — the
+    three inner steps carry the names. `streamTurn` *also* deduplicates node boundaries
+    per superstep, so a future node making the same mistake costs a less precise `end`
+    summary rather than a doubled feed. Belt and braces, because the naming rule is a
+    convention and conventions get forgotten.
+37. **A tool produces one step, on completion, not a `start`/`end` pair.** *Why:* the step
+    vocabulary fixed in the brief has a single `tool` type. A tool that never returns is
+    already visible as the missing `end` on the node holding it. Revisit in Phase 5 if
+    watching a long web search start matters.
