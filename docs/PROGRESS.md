@@ -100,10 +100,11 @@ stats+docs question) against the old `/api/v1/moonmind/chat` and the new endpoin
 `docs/evals/about_me.md` (answers side by side + retrieved-id overlap), and Ayan agrees the
 quality is equivalent. An offline test covers the node with fake retrieval.
 
-### `[~]` Phase 4 — Live event feed
-*Built, covered offline, and watched live end to end for a stats question and an
-about_me question. Two live re-checks are outstanding — see the handoff entry's open
-items 1 and 2.*
+### `[x]` Phase 4 — Live event feed
+*Ticked on Ayan's explicit call (2026-09-13) so Phase 5 could start, as Phases 0 and 3b
+were. Built, covered offline, and watched live end to end for a stats question and an
+about_me question. **Two live re-checks remain outstanding** — handoff open items 1 and 2
+— both blocked on Atlas refusing TLS handshakes, not on code.*
 **⛔ GATE — settled 2026-09-13:** **(a) polling.** No Nginx buffering change to get
 wrong in prod, the `password` header survives (EventSource cannot send one), and
 resuming after a refresh is just a larger `since`. SSE stays available later over the
@@ -118,8 +119,13 @@ Nginx location block if SSE. Add `runs.js` to the ARCHITECTURE.md layout.
 about_me query and a stats query; an erroring node appears as an `error` step followed by a
 graceful answer.
 
-### `[ ]` Phase 5 — Agent factory + `tech_web`
-**⛔ GATE:** confirm the search provider (the LLD recommends Tavily).
+### `[~]` Phase 5 — Agent factory + `tech_web`
+*Built and covered offline. The live half of the "Done when" — 5 tech/AI questions
+returning web-grounded answers — has not run: there is no Tavily key in this working copy
+and Atlas is down. See the handoff entry's open item 1.*
+**⛔ GATE — settled 2026-09-13:** **Tavily** (Ayan's call, matching the LLD). It returns
+extracted page content rather than snippets, so `websearch.js` needs no scrape-and-extract
+layer and the agent can ground an answer from one call.
 **Scope:** `src/integrations/websearch.js` (plain JS, timeout); `src/agent/tools.js` with a
 zod-schema'd `web_search` tool and `TOOLSETS = { tech_web: [web_search] }`;
 `src/agent/nodes/agents.js` with `makeAgentNode({ name, toolset, prompt, maxSteps })` on
@@ -611,6 +617,89 @@ as `failed` rather than rejecting into an unhandled promise.
 
 ---
 
+### Phase 5 — Agent factory + tech_web — 2026-09-13
+
+**Shipped.** `makeAgentNode`, the `web_search` tool, the `TOOLSETS` map, and `tech_web`
+as the first live agent route. 322 offline tests pass (30 new). `tech_web` is off the
+stub list; `complex`, `book_catchup` and `send_mail` remain stubbed.
+
+**Files.**
+- `src/integrations/websearch.js` (~120 lines, new) — Tavily on native `fetch`, one
+  timeout, no retries, plain JS with no LangChain import.
+- `src/agent/tools.js` (~85 lines, new) — the `web_search` tool and
+  `TOOLSETS = { tech_web: [web_search] }`.
+- `src/agent/nodes/agents.js` (~135 lines, new) — `makeAgentNode`.
+- `src/agent/prompts.js` — `TECH_WEB_SYSTEM_PROMPT`, `buildTruncatedAnswer`,
+  `AGENT_NO_ANSWER`.
+- `src/agent/index.js` — `tech_web` registered; `owningNode()` added to the feed.
+- `src/agent/runs.js` — `describeToolOutput` understands a ToolMessage.
+- `src/config.js` — five new vars.
+- `test/agent/agents.test.js`, `test/integrations/websearch.test.js`, plus one new case
+  in `test/agent/stream.test.js`.
+- Ten existing test files gained `TAVILY_API_KEY` in their env preamble; `config.test.js`
+  gained it in `MINIMAL_ENV` and in the required-vars assertion.
+
+**One new dependency: `langchain` (1.5.11).** Pre-justified by the Phase 1 decision and
+its open item 3 — `createAgent` lives there, and LangGraph's `createReactAgent` carries a
+`@deprecated` pointing at it. Nothing else was added: Tavily is called with `fetch`, not
+with `@langchain/tavily`, because `integrations/` is framework-free by ARCHITECTURE §2 and
+the client is ~120 lines either way.
+
+**Env vars.** Five added, bringing the total to 74. **`TAVILY_API_KEY` is required** —
+the same treatment `OPENAI_API_KEY` and `GEMINI_API_KEY` get, because `tech_web` is a live
+route from now on and a missing key should stop the boot rather than reach a visitor as a
+broken answer. `TAVILY_BASE_URL`, `TAVILY_TIMEOUT_MS` (15s), `TAVILY_MAX_RESULTS` (5),
+`TAVILY_SEARCH_DEPTH` (basic) and `MOONMIND_AGENT_MAX_STEPS` (4) all have defaults.
+
+**Tool isolation, as built.** `TOOLSETS` is the only place a route's tools are named, and
+`makeAgentNode` binds exactly what it is handed. `tech_web` therefore has no calendar or
+email tool in memory, never mind in a schema. The prompt *also* says it cannot book or
+email, but that is courtesy to the visitor, not the control: the test that matters drives
+a model which explicitly calls `send_email` and `create_calendar_event`, and asserts
+nothing executes and the run still answers.
+
+**maxSteps.** `modelCallLimitMiddleware({ runLimit, exitBehavior: "end" })`. Its own exit
+appends a library notice ("Model call limits exceeded…") as the final message, which is
+not visitor-facing copy, so the node detects truncation by **counting tool rounds** rather
+than matching that wording — with a limit of N, spending all N calls on tool requests means
+the call that would have written the answer never happened. On truncation the node returns
+`buildTruncatedAnswer(sources)`, which still hands over the links it did find.
+
+**Verified offline** (no network, no API key; `FakeToolCallingModel` plus an injected
+search): bound tools are exactly `["web_search"]`; an injected "book a meeting and send an
+email" executes nothing; `maxSteps` ends gracefully with sources and without the library's
+notice; sources accumulate across several searches in order; the node writes back only
+`finalAnswer` and `searchResults` and never the agent's scratchpad; every Tavily failure
+mode (timeout, 401/403, 429, 5xx, malformed body) maps to a distinct code, and the API key
+never appears in an error message.
+
+**Deviations.** Three, recorded below (38-40).
+
+**Open items.**
+1. **The "Done when" live check has not run: 5 tech/AI questions returning web-grounded
+   answers with sources.** It is blocked on two things, neither of them code:
+   **(a) there is no `TAVILY_API_KEY`** — the `.env` in this working copy has none, and
+   getting one is yours to do (tavily.com, free tier); **(b) Atlas is still refusing TLS
+   handshakes**, so the graph cannot compile its checkpointer. Once both are sorted:
+   `node --env-file=.env src/server.js`, then `/run-viewer.html` and ask five tech
+   questions — the feed should show `tech_web:tool` steps and the answer should carry
+   markdown source links.
+2. **`TAVILY_API_KEY` is now required, so the next deploy fails without it.** Set it in
+   the VM's `~/portfolio-api-v2/.env` **before** pulling the next image, or the container
+   will not boot. This is the one change in this phase that can break a running service.
+3. **Tavily's free tier is ~1,000 credits/month and nothing meters it.** `tech_web` is
+   reachable by anyone with the shared password, at up to `MOONMIND_AGENT_MAX_STEPS`
+   searches per question. Phase 6a's "tight rate limiting" should cover `/chat` and
+   `/runs`, not only the action routes — this is the second phase to raise it (Phase 4
+   open item 3).
+4. **Carried over, still five unrun checks:** Phase 0's deploy and parity run, Phase 1's
+   `router-eval`, Phase 2's `stats-eval`, Phase 3a's `retrieval-parity`, Phase 3b's
+   `about-me-eval`, plus Phase 4's two live re-checks. All of them need Atlas back.
+5. **`npm test` is still broken** (`nodemon --test`, and `nodemon` is not a dependency).
+   Unchanged from Phase 4; `node --test` is what was run.
+
+---
+
 ---
 
 ## Decisions
@@ -1050,3 +1139,59 @@ with the reason. Append as they arise.)*
     vocabulary fixed in the brief has a single `tool` type. A tool that never returns is
     already visible as the missing `end` on the node holding it. Revisit in Phase 5 if
     watching a long web search start matters.
+
+### Phase 5 decisions — 2026-09-13
+
+- **⛔ GATE: Tavily as the search provider.** Ayan's call, matching the LLD's
+  recommendation. The deciding factor was depth of grounding per call: Tavily returns
+  extracted page *content* plus source URLs, where Brave and most general search APIs
+  return snippets and links. With snippets we would have had to build fetch-and-extract
+  inside `integrations/`, which is the bulk of the work the module otherwise avoids, and
+  answers would cite pages the agent never actually read. Brave's larger free tier (2,000
+  queries/month vs ~1,000 credits) was not worth that.
+- **No provider SDK.** `@langchain/tavily` exists, but `integrations/` is framework-free
+  plain JS by ARCHITECTURE §2 and the client is ~120 lines of `fetch` either way. One
+  fewer dependency, and the timeout and error taxonomy are ours.
+- **`TAVILY_API_KEY` is required, not optional.** Consistent with `OPENAI_API_KEY` and
+  `GEMINI_API_KEY`, and it follows from CLAUDE.md's "fails fast": `tech_web` is live from
+  this phase, so a missing key is misconfiguration, and finding out at boot beats finding
+  out when a visitor asks a question. The cost is that the next deploy needs the key set
+  on the VM first — recorded as a handoff open item rather than softened away.
+- **`maxSteps` is enforced by `modelCallLimitMiddleware`, not by a hand-rolled loop.**
+  LLD §10 puts hand-rolled agent loops out of scope; the prebuilt helper ships this.
+  `exitBehavior: "end"` rather than `"error"`, so the run finishes and the node can still
+  return sources.
+- **Truncation is detected by counting tool rounds, not by matching the library's
+  notice.** The middleware ends the run by appending its own message; matching its wording
+  would break on a LangChain patch release. Counting is exact: with a run limit of N, N
+  tool rounds means the answering call never happened.
+- **One search tool, not one per search mode.** The model picks the query; depth and
+  result count are configuration, not something to expose in a schema the model can talk
+  its way around.
+- **Agent nodes write back only `finalAnswer` plus their sources.** The scratchpad —
+  tool calls, tool results, intermediate reasoning — stays inside the agent, so the
+  conversation the next turn replays holds one AIMessage per turn, exactly as for every
+  other branch. `generate` appends it, unchanged.
+
+## Phase 5 deviations from LLD
+
+38. **The tool contract is `responseFormat: "content_and_artifact"`, not a JSON string.**
+    *Why:* the node needs structured sources for `searchResults` and the model needs
+    readable prose; returning `[content, artifact]` gives both without the node parsing
+    the text it just asked a model to read. `makeAgentNode` collects `artifact.results`
+    from every tool message, which is the convention Phases 6b and 7 inherit.
+39. **The feed now derives a tool step's branch from `langgraph_checkpoint_ns`, not from
+    `langgraph_node`.** *Why:* an agent node runs its own compiled graph, and that inner
+    graph overwrites `langgraph_node` — a `web_search` from `tech_web` arrives labelled
+    `tools`. That says nothing about which branch ran it and would collide across every
+    agent once 6b and 7 land. The namespace carries the full path
+    (`tech_web:<id>|tools:<id>`), so the outermost segment is the branch. Only nested
+    events have a `|`; everything else is untouched. This is Phase 4 code changed by
+    Phase 5, and it is the second time the feed has needed a fix that only a real nested
+    case could reveal.
+40. **`makeAgentNode` accepts an injected `agent` for tests.** *Why:* `FakeToolCallingModel`
+    synthesizes its content from the system prompt and ignores a supplied response, so it
+    cannot produce an empty or absent answer — the two cases the `AGENT_NO_ANSWER` fallback
+    exists for. The seam matches the `deps` pattern `about-me.js` and `stats.js` already
+    use, and the toolset is still bound and still reported by `toolNames`, so the isolation
+    assertions are unaffected by it.

@@ -17,15 +17,13 @@ const { createRouterNode } = require("./nodes/router");
 const { createGenerateNode } = require("./nodes/generate");
 const { createStatsNode, createStatsAndDocsNode } = require("./nodes/stats");
 const { createAboutMeNode } = require("./nodes/about-me");
+const { makeAgentNode } = require("./nodes/agents");
+const { TOOLSETS } = require("./tools");
+const { TECH_WEB_SYSTEM_PROMPT } = require("./prompts");
 const { refusal, listCapabilities, makeStubNode } = require("./nodes/simple");
 
-// Routes whose real implementation lands in a later phase (5, 6b, 7).
-const STUBBED_ROUTES = Object.freeze([
-  "tech_web",
-  "complex",
-  "book_catchup",
-  "send_mail",
-]);
+// Routes whose real implementation lands in a later phase (6b, 7).
+const STUBBED_ROUTES = Object.freeze(["complex", "book_catchup", "send_mail"]);
 
 /** The production node set. Tests build their own and pass it straight to buildGraph. */
 function createNodes() {
@@ -38,6 +36,15 @@ function createNodes() {
 
   STUBBED_ROUTES.forEach((route) => {
     nodes[route] = makeStubNode(route);
+  });
+
+  // The only agent so far. `TOOLSETS.tech_web` is the whole of what it can do — there is
+  // no second place to look, and no prompt that widens it.
+  nodes.tech_web = makeAgentNode({
+    name: "tech_web",
+    toolset: TOOLSETS.tech_web,
+    prompt: TECH_WEB_SYSTEM_PROMPT,
+    sourcesField: "searchResults",
   });
 
   // stats_and_docs composes the other two rather than reimplementing either.
@@ -155,6 +162,31 @@ function stepLabel(event, node) {
 }
 
 /**
+ * Which graph node an event belongs to.
+ *
+ * An agent node runs its own compiled graph inside itself, and that inner graph
+ * overwrites `langgraph_node` with its own node names — a `web_search` call from the
+ * `tech_web` agent arrives labelled `tools`, which says nothing about which branch ran
+ * it and will collide with every other agent once Phases 6b and 7 land.
+ *
+ * `langgraph_checkpoint_ns` carries the full path (`tech_web:<id>|tools:<id>`), so the
+ * outermost segment is the branch. Only nested events have a `|`; for everything else
+ * `langgraph_node` is already right.
+ */
+function owningNode(event) {
+  const namespace = event.metadata?.langgraph_checkpoint_ns;
+
+  if (typeof namespace === "string" && namespace.includes("|")) {
+    const outermost = namespace.split("|")[0].split(":")[0];
+    if (outermost) {
+      return outermost;
+    }
+  }
+
+  return event.metadata?.langgraph_node ?? null;
+}
+
+/**
  * Stream one turn as ordered steps.
  *
  * Yields `{ runId, seq, node, type, ts, summary }` and **returns** the turn summary, so
@@ -191,7 +223,7 @@ async function* streamTurn({ sessionId, message, runId }, deps = {}) {
   });
 
   for await (const event of graph.streamEvents(input, { ...config, version: "v2" })) {
-    const node = event.metadata?.langgraph_node ?? null;
+    const node = owningNode(event);
 
     if (!node) {
       if (event.event === "on_chain_end") {

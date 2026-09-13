@@ -12,6 +12,7 @@ process.env.REFRESH_SECRET ??= "s";
 process.env.OPENAI_API_KEY ??= "sk-test";
 process.env.MOONMIND_PASSWORD ??= "pw";
 process.env.GEMINI_API_KEY ??= "gem-test";
+process.env.TAVILY_API_KEY ??= "tvly-test";
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -210,6 +211,52 @@ test("a tool call inside a node becomes one tool step", async () => {
   const toolStep = steps.find((step) => step.type === "tool");
   assert.equal(toolStep.summary, "web_search -> 21 chars");
   assert.ok(!toolStep.summary.includes("langgraph"), "tool arguments must not reach the feed");
+});
+
+test("an agent node's tool calls are attributed to the branch, not to the agent's internals", async () => {
+  // A real agent runs its own compiled graph, whose nodes overwrite `langgraph_node` —
+  // a web_search from `tech_web` arrives labelled `tools`. The feed has to recover the
+  // branch from the checkpoint namespace, or every agent's tools look alike once
+  // Phases 6b and 7 add more of them.
+  const { FakeToolCallingModel } = require("langchain");
+  const { makeAgentNode } = require("../../src/agent/nodes/agents");
+  const { createWebSearchTool } = require("../../src/agent/tools");
+
+  const search = createWebSearchTool({
+    search: async (query) => ({ query, answer: null, results: [{ title: "T", url: "https://x", content: "c" }] }),
+  });
+
+  const techWeb = makeAgentNode(
+    { name: "tech_web", toolset: [search], prompt: "p", sourcesField: "searchResults", maxSteps: 3 },
+    {
+      model: new FakeToolCallingModel({
+        toolCalls: [[{ name: "web_search", args: { query: "node 22" }, id: "c1" }], []],
+      }),
+    },
+  );
+
+  const graph = graphWith({
+    router: async () => ({ route: "tech_web", routeConfidence: 1 }),
+    tech_web: techWeb,
+  });
+
+  const { steps } = await collect(streamTurn({ sessionId: "s1", message: "node 22?", runId: "r1" }, { graph }));
+
+  assert.deepEqual(shape(steps), [
+    "router:start",
+    "router:end",
+    "tech_web:start",
+    "tech_web:tool",
+    "tech_web:end",
+    "generate:start",
+    "generate:end",
+  ]);
+
+  assert.ok(!steps.some((step) => step.node === "tools"), "the agent's inner node names stay internal");
+
+  const toolStep = steps.find((step) => step.type === "tool");
+  assert.equal(toolStep.summary, "web_search -> 1 results");
+  assert.ok(!toolStep.summary.includes("https://x"), "result URLs stay out of the feed");
 });
 
 // ---------------------------------------------------------------------------

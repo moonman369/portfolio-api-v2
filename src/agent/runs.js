@@ -104,7 +104,22 @@ function describeToolOutput(output) {
   if (output == null) return "no result";
   if (typeof output === "string") return `${output.length} chars`;
   if (Array.isArray(output)) return `${output.length} items`;
-  if (typeof output === "object") return `${Object.keys(output).length} fields`;
+
+  if (typeof output === "object") {
+    // A tool that ran inside an agent arrives as a ToolMessage. Its `artifact` is the
+    // structured record the tool meant for the node (see `agent/tools.js`), so the
+    // useful number is how many results came back — not how many fields a LangChain
+    // message class happens to have.
+    const results = output.artifact?.results;
+    if (Array.isArray(results)) {
+      return `${results.length} results`;
+    }
+    if (typeof output.content === "string") {
+      return `${output.content.length} chars`;
+    }
+    return `${Object.keys(output).length} fields`;
+  }
+
   return typeof output;
 }
 

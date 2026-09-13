@@ -11,6 +11,7 @@ process.env.REFRESH_SECRET ??= "s";
 process.env.OPENAI_API_KEY ??= "sk-test";
 process.env.MOONMIND_PASSWORD ??= "hunter2";
 process.env.GEMINI_API_KEY ??= "gem-test";
+process.env.TAVILY_API_KEY ??= "tvly-test";
 
 const test = require("node:test");
 const assert = require("node:assert/strict");

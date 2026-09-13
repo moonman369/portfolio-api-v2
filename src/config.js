@@ -108,6 +108,17 @@ const envSchema = z.object({
   // service's adapter which appended "/v1" itself.
   OPENAI_BASE_URL: nonEmpty.default("https://api.openai.com/v1"),
 
+  // ---- Tavily (web search) ------------------------------------------------
+  // Required, like the other two providers: `tech_web` is a live route from Phase 5 on,
+  // and a missing key should stop the boot rather than surface as a broken answer to a
+  // visitor. Set it on the VM before the next deploy.
+  TAVILY_API_KEY: nonEmpty,
+  TAVILY_BASE_URL: nonEmpty.default("https://api.tavily.com"),
+  TAVILY_TIMEOUT_MS: positiveInt.default(15_000),
+  TAVILY_MAX_RESULTS: positiveInt.max(20).default(5),
+  // "advanced" costs 2 credits per search instead of 1 and returns longer extracts.
+  TAVILY_SEARCH_DEPTH: z.enum(["basic", "advanced"]).default("basic"),
+
   // ---- MoonMind chat ------------------------------------------------------
   MOONMIND_PASSWORD: nonEmpty,
   // Per-role models stay independent so the cheap roles can move without touching
@@ -129,6 +140,7 @@ const envSchema = z.object({
   // once history outgrows this (populated from Phase 3b).
   MOONMIND_HISTORY_MAX_MESSAGES: positiveInt.default(20),
   MOONMIND_RUN_TIMEOUT_MS: positiveInt.default(120_000),
+  MOONMIND_AGENT_MAX_STEPS: positiveInt.max(20).default(4),
   MOONMIND_RECURSION_LIMIT: positiveInt.default(25),
 
   // ---- Gemini embeddings --------------------------------------------------
@@ -261,6 +273,16 @@ function loadConfig(env) {
       historyMaxMessages: raw.MOONMIND_HISTORY_MAX_MESSAGES,
       runTimeoutMs: raw.MOONMIND_RUN_TIMEOUT_MS,
       recursionLimit: raw.MOONMIND_RECURSION_LIMIT,
+      // How many model calls one agent node gets per run. Each tool-calling round is
+      // one, so this bounds both cost and latency for `tech_web` and every agent after.
+      agentMaxSteps: raw.MOONMIND_AGENT_MAX_STEPS,
+    },
+    tavily: {
+      apiKey: raw.TAVILY_API_KEY,
+      baseUrl: raw.TAVILY_BASE_URL,
+      timeoutMs: raw.TAVILY_TIMEOUT_MS,
+      maxResults: raw.TAVILY_MAX_RESULTS,
+      searchDepth: raw.TAVILY_SEARCH_DEPTH,
     },
     gemini: {
       apiKey: raw.GEMINI_API_KEY,
