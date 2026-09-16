@@ -70,8 +70,9 @@ test("writes documents and nothing else", async () => {
   const retrieve = fakeRetrieve();
   const result = await createAboutMeNode(nodeDeps(retrieve))(state());
 
-  assert.deepEqual(Object.keys(result), ["documents"]);
+  assert.deepEqual(Object.keys(result), ["documents", "retrievalDebug"]);
   assert.deepEqual(result.documents.map((d) => d.id), ["a", "b"]);
+  assert.equal(result.retrievalDebug, null, "off unless MOONMIND_RETRIEVAL_DEBUG is on");
   assert.equal(result.finalAnswer, undefined, "generate owns the answer");
 });
 

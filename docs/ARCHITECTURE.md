@@ -144,9 +144,9 @@ Rules that keep it that way:
   only the keys it changes. No classes, no `BaseNode`, no lifecycle hooks.
 - **`routeFromState` is a pure function** over a static `ROUTE_TO_NODE` map. An unknown or
   missing route falls to `refusal`. No conditionals scattered across nodes.
-- **All four agentic nodes come from one factory**, `makeAgentNode({ name, toolset, prompt,
-  maxSteps })` (built in Phase 5, reused unchanged in 6b and 7). The agent runs on its own
-  message list seeded from recent history and writes back **only its final answer and
+- **The single `agent` node comes from the factory built in Phase 5**,
+  `makeAgentNode({ name, toolset, prompt, maxSteps })`, reused unchanged. It runs on its
+  own message list seeded from recent history and writes back **only its final answer and
   sources** — never its internal tool chatter into `messages`.
 - **`TOOLSETS` in `tools.js` is the single auditable map** of which agent gets which tools.
   One place to read to answer "can this agent send email?".
@@ -156,12 +156,35 @@ Rules that keep it that way:
 - **`runTurn({ sessionId, message })` is the single entry point** for HTTP, the run feed,
   and the eval scripts. If something needs to run the graph, it calls `runTurn`.
 
-Routes (LLD §2): `about_me`, `stats`, `tech_web`, `complex`, `refusal`, `book_catchup`,
-`send_mail`, `list_capabilities`.
+**Route taxonomy (supersedes LLD §2 — see PROGRESS.md Deviations for why):**
 
-State fields (LLD §3 plus three additions): `sessionId`, `rawQuery`, `messages`, `route`,
-`routeConfidence`, `slots`, `documents`, `statsPayload`, `searchResults`,
-`pendingConfirmation`, `summary`, **`finalAnswer`**, **`error`**, **`activeFlow`**.
+```
+guard (non-LLM: length cap, rate limit, auth)  [existing http-layer checks, unchanged]
+  → router  (6 labels)
+      ├── knowledge    → retrieval (RRF pipeline) → generate
+      ├── stats        → direct dispatch → generate
+      ├── agent        → ONE bounded agent (4 tools) → generate
+      ├── action       → sub-branch inside the node: 'book' | 'mail'
+      ├── refusal      → templated, no LLM call
+      └── capabilities → templated, no LLM call
+```
+
+- `about_me` and `complex` merge into **`knowledge`** — the boundary between them was
+  never real.
+- `tech_web` and `complex`'s tool use merge into **`agent`**: one `makeAgentNode` call,
+  four tools (`resolve_time`, `metadata_filter`, `semantic_search`, `web_search`).
+- `book_catchup` and `send_mail` merge into **`action`**, branching internally on
+  `slots.action`. Booking is a templated scheduling link from a hosted provider; mail is
+  deterministic. Neither is an agent — no calendar tool, no confirmation step.
+- Escalation: `knowledge` may hand off to `agent` **once per turn**, budget enforced in
+  state. No other node escalates; `agent` never escalates back.
+
+State fields (supersedes LLD §3): `sessionId`, `rawQuery`, `messages`, `route`,
+`routeConfidence`, `slots`, `documents`, `statsPayload`, `searchResults`, `summary`,
+**`finalAnswer`**, **`error`**, **`activeFlow`**, **`agentEscalationUsed`** (the
+`knowledge`→`agent` handoff budget, reset per turn). `pendingConfirmation` is dropped —
+`action`'s `book` branch returns a templated link with no confirmation step, and `mail` is
+deterministic.
 
 ---
 
@@ -198,16 +221,18 @@ models capped at N turns, with `summary` populated only once history exceeds tha
 
 **Side effects only in tools, enforced in code — not by prompting.**
 
-- Writes are idempotent (per session, per intent).
-- Calendar writes require a confirmation recorded in state on a **prior** turn; the
-  `create_event` tool refuses without it.
+- `action`'s `mail` branch sends deterministically and idempotently per session/intent —
+  no agent decides whether to send.
 - The email recipient comes from `config.js` and is **never a tool argument** — the
   `send_email` tool schema has no recipient field, so no prompt injection can redirect it.
+- `action`'s `book` branch has no calendar integration or tool at all — it returns a
+  templated, hosted scheduling link. There is no confirmation step to guard.
 - Tool isolation is by what `TOOLSETS` binds, never by asking a model not to use something.
 
-**Sticky active flow.** While `activeFlow` is set (mid-booking, say), `routeFromState`
-returns to that flow unless the router classifies an explicit cancel or a topic change. A
-slot-filling reply like *"Tuesday 3pm"* must not be re-routed to `about_me`.
+**Sticky active flow.** `activeFlow` remains in state for any node that spans turns. The
+old `book_catchup`/`send_mail` design used it for multi-turn slot-filling; `action`'s
+`book` and `mail` branches are now single-turn and deterministic, so whether either still
+needs stickiness is a Phase 9 decision, not assumed here.
 
 **Testable offline.** `buildGraph` takes injected nodes and dependencies, so `test/agent/`
 exercises the whole graph with fake models and fake services — no network, no keys.

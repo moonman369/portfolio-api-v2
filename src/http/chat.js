@@ -85,7 +85,7 @@ function toFeedResponse(run, steps, since) {
 }
 
 function createChatRouter() {
-  const { moonmind } = getConfig();
+  const { moonmind, retrieval } = getConfig();
   const bodySchema = buildBodySchema(moonmind.maxMessageChars);
 
   const router = express.Router();
@@ -115,6 +115,9 @@ function createChatRouter() {
         route: turn.route,
         answer: turn.answer,
         documents: toResponseDocuments(turn.documents),
+        // Extra field, gated on MOONMIND_RETRIEVAL_DEBUG, never part of the normal
+        // response shape. Ids and titles only — see retrieval/index.js.
+        ...(retrieval.debugEnabled ? { retrievalDebug: turn.retrievalDebug } : {}),
       },
     });
   });

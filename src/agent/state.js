@@ -55,6 +55,9 @@ const State = Annotation.Root({
   documents: lastValue([]),
   statsPayload: lastValue(null),
   searchResults: lastValue([]),
+  // A per-stage retrieval trace (ids/titles only), populated only when
+  // `MOONMIND_RETRIEVAL_DEBUG` is on. See ARCHITECTURE.md and retrieval/index.js.
+  retrievalDebug: lastValue(null),
 
   pendingConfirmation: lastValue(null),
   activeFlow: lastValue(null),
@@ -76,6 +79,7 @@ const PER_TURN_RESET = Object.freeze({
   documents: [],
   statsPayload: null,
   searchResults: [],
+  retrievalDebug: null,
   finalAnswer: null,
   error: null,
 });

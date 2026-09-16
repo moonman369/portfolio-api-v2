@@ -113,6 +113,7 @@ function createStatsAndDocsNode({ statsNode, aboutMeNode }) {
     return {
       statsPayload: statsResult.status === "fulfilled" ? statsResult.value?.statsPayload ?? null : null,
       documents: docsResult.status === "fulfilled" ? docsResult.value?.documents ?? [] : [],
+      retrievalDebug: docsResult.status === "fulfilled" ? docsResult.value?.retrievalDebug ?? null : null,
     };
   };
 }

@@ -313,6 +313,16 @@ async function searchAllArms({ query, plan, metadata = {}, limit }, deps = {}) {
   return {
     documents: fuseByRRF(resultSets, { k: retrieval.rrfK, weights: retrieval.rrfWeights }),
     arms: resultSets.map(({ source, documents }) => ({ source, count: documents.length })),
+    // Cheap to compute (the hits are already in memory) and only surfaced by callers
+    // that ask for it — see retrieval/index.js's `debug` option.
+    armHits: resultSets.map(({ source, documents }) => ({
+      source,
+      hits: documents.map((document) => ({
+        id: document.id,
+        title: document.title,
+        score: Number.isFinite(document.score) ? document.score : null,
+      })),
+    })),
     failed,
   };
 }

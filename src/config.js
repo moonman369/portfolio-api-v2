@@ -187,6 +187,11 @@ const envSchema = z.object({
   // this stays off by default to keep retrieval behaviour comparable. Note the
   // collection has no text index: enabling it means a regex collection scan.
   MOONMIND_KEYWORD_ENABLED: booleanFlag(false),
+  // Per-stage retrieval trace (ids/titles only, never full documents) on `POST /chat`'s
+  // response, behind the same password header the route already requires. Off by
+  // default — this is a measurement tool (Phase 6), not a response field a frontend
+  // should depend on.
+  MOONMIND_RETRIEVAL_DEBUG: booleanFlag(false),
 
   // ---- Document ingestion -------------------------------------------------
   MOONMIND_SUMMARY_MIN_SENTENCES: positiveInt.default(3),
@@ -328,6 +333,7 @@ function loadConfig(env) {
       decomposeEnabled: raw.MOONMIND_DECOMPOSE_ENABLED,
       decomposeMaxSubqueries: raw.MOONMIND_DECOMPOSE_MAX_SUBQUERIES,
       keywordEnabled: raw.MOONMIND_KEYWORD_ENABLED,
+      debugEnabled: raw.MOONMIND_RETRIEVAL_DEBUG,
     },
     documents: {
       summaryMinSentences: raw.MOONMIND_SUMMARY_MIN_SENTENCES,

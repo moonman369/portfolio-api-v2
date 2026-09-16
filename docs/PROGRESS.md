@@ -119,10 +119,11 @@ Nginx location block if SSE. Add `runs.js` to the ARCHITECTURE.md layout.
 about_me query and a stats query; an erroring node appears as an `error` step followed by a
 graceful answer.
 
-### `[~]` Phase 5 — Agent factory + `tech_web`
-*Built and covered offline. The live half of the "Done when" — 5 tech/AI questions
-returning web-grounded answers — has not run: there is no Tavily key in this working copy
-and Atlas is down. See the handoff entry's open item 1.*
+### `[x]` Phase 5 — Agent factory + `tech_web`
+*Ticked on Ayan's explicit call (2026-09-16) so Phase 6 could start, the same way Phases 0,
+3b and 4 were. Built and covered offline. **The live half of the "Done when" — 5 tech/AI
+questions returning web-grounded answers — was never run**: no Tavily key in this working
+copy and Atlas was down. Open item 1 in the Phase 5 handoff entry stands.*
 **⛔ GATE — settled 2026-09-13:** **Tavily** (Ayan's call, matching the LLD). It returns
 extracted page content rather than snippets, so `websearch.js` needs no scrape-and-extract
 layer and the agent can ground an answer from one call.
@@ -137,61 +138,81 @@ factory is reused unchanged in 6b and 7.
 gracefully; "book a meeting / send an email" injected into a tech question has no
 calendar/email path.
 
-### `[ ]` Phase 6a — Action decisions, integrations, tools
-**⛔ GATE first — five questions for Ayan, recorded in Decisions and CLAUDE.md:**
-(1) calendar provider (LLD assumes Google Calendar); (2) email provider (LLD recommends an
-HTTP API — Resend/SendGrid — over SMTP); (3) bookable hours + timezone; (4) confirmation
-mode: chat "yes" vs emailed link; (5) how the visitor gets their booking confirmation
-without the email tool ever sending to a visitor-supplied address.
-**Scope:** `src/integrations/calendar.js` and `email.js` (plain JS, timeouts; the email
-client reads the recipient only from config, `MOONMIND_OWNER_EMAIL`);
-`scripts/google-oauth.js` (one-time grant → refresh token in env, same pattern as
-`GITHUB_PAT`); tools `check_free_busy`, `create_event` (idempotent per session, refuses
-without a prior-turn confirmation in state — enforced in the tool), `send_email` (**no
-recipient field**); `TOOLSETS` entries for `book_catchup` and `send_mail`.
-**Done when:** each integration and tool passes isolated tests against a real test calendar
-and sandbox mailbox; `create_event` without confirmation is rejected; the `send_email`
-schema has no recipient.
+### `[x]` Phase 6 — Re-plan the remaining phases, then measure retrieval
+**Scope:** the 8-route taxonomy is superseded — no `complex` node, no `book_catchup`
+agent, no calendar/email booking stack. `docs/ARCHITECTURE.md`, this file, and
+`CLAUDE.md` rewritten to the 6-label graph (`knowledge` / `stats` / `agent` / `action` /
+`refusal` / `capabilities`, diagrammed in ARCHITECTURE.md §4). A debug mode added to
+`retrieve()` (per-arm hits, RRF-fused order, post-ranker order, post-rerank order — ids
+and titles only) behind the existing password header, plus `MOONMIND_RETRIEVAL_DEBUG` for
+the endpoint. `scripts/retrieval-ab.js` runs the Phase 3b question set across four configs
+(decompose on/off × rerank on/off), writing `docs/evals/retrieval-ab.md` with corpus size,
+per-question/config retrieved ids + rank changes + answers + latency + LLM call count, and
+recall-headroom numbers for 3 broad questions.
+**⛔ GATE:** present the A/B results; Ayan decides `DECOMPOSE_ENABLED`, `RERANK_ENABLED`
+and `k`, recorded in Decisions.
+**Done when:** docs match the new plan; debug mode returns per-stage ordering;
+`retrieval-ab.md` covers all four configs plus recall headroom; the gate is answered.
 
-### `[ ]` Phase 6b — `book_catchup` + `send_mail`
-**Scope:** both nodes from the Phase 5 factory (reuse, don't fork). Slot-filling (visitor
-name, contact, purpose, preferred window, timezone) persists in `slots` via the
-checkpointer; the node sets `activeFlow = 'book_catchup'` while in progress and clears it
-on completion or cancel. Always free/busy check before proposing times. Confirmation via
-`pendingConfirmation` in state, enforced by `create_event` — keep the state-flag approach
-unless it demonstrably can't work. Tight per-IP + sessionId rate limits for action routes.
-**Done when:** a full booking conversation (ask → fill slots over several turns → propose →
-confirm → event created → notification per Decision 5) works end to end on the test
-calendar. Tests: a mid-flow "Tuesday 3pm works" stays in `book_catchup`; "cancel" exits the
-flow; skipping confirmation never creates an event; `send_mail`'s tools are exactly
-`["send_email"]`; "send this to someone@else.com" still reaches only Ayan; the rate limit
-trips.
+### `[ ]` Phase 7 — Router (6 labels) + `knowledge` node
+**Scope:** router relabeled to 6 outputs: `knowledge`, `stats`, `agent`, `action`,
+`refusal`, `capabilities`. `about_me` and `complex`'s retrieval-only path merge into one
+`knowledge` node, reusing the existing decompose → fan-out → rank → rerank pipeline.
+`knowledge` may hand off to `agent` once per turn, the budget tracked in
+`agentEscalationUsed` (reset per turn) so it can't loop. No other node escalates; `agent`
+never escalates back.
+**⛔ GATE:** how a mixed stats+knowledge question routes now that `stats_and_docs` has no
+slot in the 6-label taxonomy — carried over unresolved from the Phase 1 gate.
+**Done when:** router-eval passes on the relabeled fixtures; `knowledge` node tests cover
+the merged about_me/complex paths and the escalation budget; a live knowledge question that
+needs live/tool grounding escalates to `agent` exactly once.
 
-### `[ ]` Phase 7 — `complex` node
-**Scope:** a deterministic `resolve_time` tool (no LLM) turning "2023", "now", "last year",
-"since I joined" into date ranges relative to the current date; `metadata_filter` and
-`semantic_search` tools as thin wrappers over `retrieval/` (same code paths, not copies),
-with metadata filters covering `date_start`, `completion_year`, `domain`, `subcategory`,
-`is_active`; `TOOLSETS.complex = [resolve_time, metadata_filter, semantic_search,
-web_search]`; `complex = makeAgentNode({ ... })`. Answers cite the documents and sources
-used. Handle any mixed-query routing decided in Phase 1.
-**Done when:** `docs/evals/complex.md` shows coherent, correctly-sourced answers for
-"backend skills 2023 vs now", "how has Ayan upskilled in AI", and "AI projects + market
-relevance today". Tests: exactly 4 bound tools; `resolve_time` unit cases.
+### `[ ]` Phase 8 — `agent` node (one bounded agent, four tools)
+**Scope:** `TOOLSETS.agent = [resolve_time, metadata_filter, semantic_search, web_search]`
+— `tech_web`'s `web_search` plus a deterministic `resolve_time` tool (no LLM; turns
+"2023", "now", "last year", "since I joined" into date ranges relative to the current
+date) and `metadata_filter` / `semantic_search` thin wrappers over `retrieval/` (same code
+paths, not copies; filters cover `date_start`, `completion_year`, `domain`, `subcategory`,
+`is_active`) — all bound to one `makeAgentNode` call, reused unchanged from Phase 5.
+Replaces the separate `tech_web` and `complex` routes.
+**Done when:** exactly 4 bound tools; `resolve_time` unit cases; live questions spanning
+both web-grounded and portfolio-metadata queries ("backend skills 2023 vs now", "how has
+Ayan upskilled in AI", "AI projects + market relevance today") get coherent, sourced
+answers, recorded in `docs/evals/agent.md`.
 
-### `[ ]` Phase 8 — Cutover + final structure audit
-**Scope:** (1) structure audit against ARCHITECTURE.md — layout, dependency direction,
+### `[ ]` Phase 9 — `action` node (`book` | `mail`)
+**⛔ GATE first — questions for Ayan, recorded in Decisions and CLAUDE.md:** (1)
+scheduling-link provider (hosted, e.g. Calendly-style — no `check_free_busy`/`create_event`
+tool, no calendar integration); (2) email provider (HTTP API — Resend/SendGrid — over
+SMTP, recipient fixed via `MOONMIND_OWNER_EMAIL`, never a tool argument); (3) how a visitor
+is shown the link/confirmation; (4) whether either branch needs multi-turn `slots` state at
+all, given both are now deterministic and single-turn (ARCHITECTURE.md §5).
+**Scope:** `src/integrations/email.js` (plain JS, timeout); one `action` node, no agent,
+branching internally on `slots.action` (`'book'` | `'mail'`). `book` returns a templated
+scheduling link deterministically — no tool, no confirmation step. `mail` sends via
+`send_email` (**no recipient field** in its schema) deterministically. Replaces
+`book_catchup`/`send_mail` and the calendar/email tool-and-confirmation stack from the
+superseded Phase 6a/6b plan. Tight per-IP + sessionId rate limits for the action route.
+**Done when:** both branches covered by offline tests; `send_email`'s schema has no
+recipient; "send this to someone@else.com" still reaches only Ayan; the rate limit trips.
+
+### `[ ]` Phase 10 — Structure audit + monitoring
+**Scope:** structure audit against ARCHITECTURE.md — layout, dependency direction,
 framework boundary, file sizes, grab-bag modules, unused deps; fix small drift, report
-anything larger and wait. (2) Monitoring: per-run route, per-node latency, errors,
-tool-call counts, reusing `runs`/`steps`, plus a summary script or endpoint.
-(3) `docs/CUTOVER.md`: the exact frontend change (separate repo — instructions only),
-rollback plan, monitoring checklist, agreed zero-traffic period. (4) Regression: run every
-eval script against production.
+anything larger and wait. Monitoring: per-run route, per-node latency, errors, tool-call
+counts, reusing `runs`/`steps`, plus a summary script or endpoint.
+**Done when:** the audit is clean or its exceptions are explicitly recorded; monitoring
+surfaces per-route/per-node stats from real run data.
+
+### `[ ]` Phase 11 — Cutover
+**Scope:** `docs/CUTOVER.md`: the exact frontend change (separate repo — instructions
+only), rollback plan, monitoring checklist, agreed zero-traffic period. Regression: run
+every eval script against production.
 **⛔ GATE:** decommissioning the old MoonMind pipeline happens in the old repo only after
 Ayan confirms zero traffic for the agreed period. Don't touch that repo from here — write
 the steps into CUTOVER.md for a separate session.
-**Done when:** the audit is clean, evals pass in production, CUTOVER.md is complete, and
-Ayan has switched the frontend.
+**Done when:** evals pass in production, CUTOVER.md is complete, and Ayan has switched the
+frontend.
 
 ---
 
@@ -700,6 +721,73 @@ never appears in an error message.
 
 ---
 
+### Phase 6 — Re-plan + retrieval measurement — 2026-09-16
+
+**Shipped.** The docs rewritten to the 6-label graph, a per-stage retrieval debug trace,
+and a live A/B eval over the real 42-document corpus. 339 offline tests pass (1 changed).
+Phase 5 ticked on Ayan's explicit call at the start of this session — its live eval was
+still unrun, same pattern as Phases 0/3b/4.
+
+**Files.**
+- `docs/ARCHITECTURE.md` — §4's route taxonomy and state-field list replaced by the
+  6-label graph (`knowledge`/`stats`/`agent`/`action`/`refusal`/`capabilities`); §5's
+  stickiness and side-effects sections updated to match (no calendar tool, no
+  confirmation step).
+- `docs/PROGRESS.md` — this file: the remaining phase checklist renumbered 7-11 to the
+  new scopes; Phase 6 deviations recorded; three Decisions appended.
+- `CLAUDE.md` — the Guardrails "calendar writes" line replaced with the `action` node's
+  actual shape (no calendar tool).
+- `src/config.js` — `MOONMIND_RETRIEVAL_DEBUG`, `retrieval.debugEnabled`.
+- `src/retrieval/search.js` — `searchAllArms` also returns `armHits` (id/title/score per
+  arm), always computed (cheap — the hits are already in memory), surfaced only when asked.
+- `src/retrieval/index.js` — `retrieve({ debug: true })` returns `.debug`: `arms`, `fused`
+  (RRF order, sorted by `rrf_score` for readability), `ranked`, `reranked`. Exported
+  `buildDebugTrace` for reuse (`scripts/retrieval-ab.js`).
+- `src/agent/state.js` — `retrievalDebug` state field, per-turn reset.
+- `src/agent/nodes/about-me.js`, `src/agent/nodes/stats.js` — pass `debug` through to
+  `retrieve()` and carry `retrievalDebug` onto state (including through
+  `stats_and_docs`).
+- `src/agent/index.js` — `toTurn()` carries `retrievalDebug`.
+- `src/http/chat.js` — `POST /chat` adds `retrievalDebug` as an extra field, only when
+  `MOONMIND_RETRIEVAL_DEBUG` is on; absent entirely otherwise. Not wired into
+  `POST /runs`/`GET /runs/:runId` — see Deviation 42.
+- `scripts/retrieval-ab.js` (new) — calls `retrieve()` and `generate` directly, in
+  process, with per-config overrides; counts real LLM calls via a wrapping proxy rather
+  than guessing from flags.
+- `docs/evals/retrieval-ab.md` (new) — the live results (see below).
+- `.env.example` — `MOONMIND_RETRIEVAL_DEBUG` documented.
+- `test/agent/about-me.test.js` — updated for the new `retrievalDebug` key.
+
+**Env vars.** One added, bringing the total to 79: `MOONMIND_RETRIEVAL_DEBUG` (default
+`false`).
+
+**The eval, run live** against the real 42-document corpus, real OpenAI and Gemini:
+9 questions (Phase 3b's about_me set, minus the mixed stats+docs one) × 4 configs, plus 3
+broad recall-headroom questions. Full per-question/config detail — retrieved ids, what the
+reranker moved, the answer, latency, LLM call count — plus the recall table is in
+`docs/evals/retrieval-ab.md`. Findings and the resulting Decisions are above; not repeated
+here.
+
+**Deviations.** Two, recorded above (41-42): the taxonomy supersession, and the debug
+trace's scope (not wired into the run feed).
+
+**Open items.**
+1. **`k` is only recorded as a Decision here, not applied.** The gate said "change no
+   defaults," so `config.js` still defaults `MOONMIND_FINAL_DOCUMENT_LIMIT` to 10. Ayan
+   applies `MOONMIND_FINAL_DOCUMENT_LIMIT=15` (and `MOONMIND_RERANK_ENABLED=true`) to the
+   deployed `.env`; whether the *default* in `config.js` should also move is for whichever
+   phase next touches retrieval config to decide, not assumed here.
+2. **The router-relabeling gate carried into Phase 7** (mixed stats+knowledge routing,
+   since `stats_and_docs` has no slot in the 6-label taxonomy) is unresolved by this
+   session — it is a re-statement of the still-open Phase 1 gate, not a new one.
+3. **Carried over, unchanged:** the five unrun live checks from Phase 5's handoff (Phase
+   0's deploy and parity run, Phase 1's `router-eval` — actually run out-of-band on
+   2026-09-16, see the entry above, so this is now four — Phase 2's `stats-eval`, Phase
+   3a's `retrieval-parity`, Phase 3b's `about-me-eval`), Phase 4's two live re-checks, and
+   `npm test` being broken (`nodemon --test`).
+
+---
+
 ---
 
 ## Decisions
@@ -743,6 +831,22 @@ never appears in an error message.
   expanded, so the agreed value is the home-relative `portfolio-api-v2`.
 - **2026-09-12 — CI runs `npm test` before building the image.** The old workflow built
   and deployed without ever running the tests.
+- **2026-09-16 — `MOONMIND_RERANK_ENABLED=true`** (Ayan, at the Phase 6 gate, from
+  `docs/evals/retrieval-ab.md`). The reranker consistently reordered 3-10 of the top 10
+  candidates and, on the questions that matter — "strongest skills, and which projects
+  demonstrate them" and the RAG-projects question — it tied skills to the projects that
+  demonstrate them and surfaced relevant documents RRF alone left outside top-10, for one
+  extra LLM call and +0.5-1s.
+- **2026-09-16 — `MOONMIND_DECOMPOSE_ENABLED` stays `false`** (Ayan, same gate). It cost
+  2-3 extra LLM calls and ~1.5s on every question, including the 7 of 9 that were
+  single-part, for a top-10 and answer nearly identical to decompose-off. Its one clear win
+  (the multi-part skills question) was already fixed by the reranker alone.
+- **2026-09-16 — `MOONMIND_FINAL_DOCUMENT_LIMIT` (k) raised 10 -> 15** (Ayan, same gate).
+  Recall-headroom measurement found 2 of 3 broad questions have more genuinely relevant
+  documents (11-12) than k=10 returns, and the corpus is small enough (42 documents) that
+  the extra context is cheap. This phase changed no defaults itself — Ayan applies the new
+  value to the deployed `.env`; Phase 7 is where `config.js`'s default would move if that
+  is what this decision is later understood to mean for a clean checkout.
 
 ---
 
@@ -1460,3 +1564,45 @@ violates CLAUDE.md's standing "no dotenv" rule and does nothing — it reports
 `injected env (0)` because `--env-file` has already loaded everything. `dotenv` is not in
 `package.json` either, so it resolves only via a transitive install and would break on a
 clean `npm ci`. One line to delete; left alone because it is outside what was asked.
+
+## Phase 6 deviations from LLD
+
+41. **The 8-route taxonomy (LLD §2, ARCHITECTURE.md's old §4) is superseded by a 6-label
+    graph** — `knowledge`, `stats`, `agent`, `action`, `refusal`, `capabilities` — dropping
+    `about_me`/`complex`/`tech_web`/`book_catchup`/`send_mail`/`list_capabilities` as
+    separate routes. *Why:* three problems the old taxonomy accumulated once real
+    questions and real routing were run against it, not a re-plan done in the abstract.
+    (a) **`about_me`/`complex` never had a real boundary.** The out-of-band router fix on
+    2026-09-16 needed an explicit rule — "`complex` is only for questions about Ayan" —
+    just to keep them apart, and both already run the identical retrieval pipeline
+    underneath (`retrieve()`). There was never a second implementation to justify a second
+    route.
+    (b) **Four near-identical agents were planned** (`tech_web`, `complex`, `book_catchup`,
+    `send_mail`) against a factory (`makeAgentNode`, Phase 5) built to need only one.
+    `tech_web` and `complex`'s tool use collapse into a single bounded `agent` with four
+    tools (`resolve_time`, `metadata_filter`, `semantic_search`, `web_search`);
+    `book_catchup` and `send_mail` were never agents at all once booking stopped needing a
+    live free/busy negotiation — see (c).
+    (c) **Scheduling is delegated to a hosted provider.** A templated scheduling link
+    (Calendly-shaped) replaces `check_free_busy`/`create_event` and the Google Calendar
+    OAuth integration the old Phase 6a gate would have required. There is no calendar tool
+    to isolate or confirm a write against, so the LLD's confirmation-in-state guardrail
+    design for calendar writes does not need building at all — `mail` is the only side
+    effect left, and it was already deterministic.
+    Old Phase 6a/6b/7 (this file's previous revision) are replaced by Phase 7 (router +
+    `knowledge`), Phase 8 (`agent`), Phase 9 (`action`). `pendingConfirmation` is dropped
+    from state (ARCHITECTURE.md §4); a new `agentEscalationUsed` field is added for the
+    `knowledge`→`agent` handoff budget.
+42. **`retrieve()` gained an opt-in `debug` trace** (`options.debug`, surfaced over HTTP
+    behind `MOONMIND_RETRIEVAL_DEBUG`) — not in the LLD, which predates the need to measure
+    the pipeline against a live, if small, corpus. Ids and titles only, per stage: per-arm
+    hits, the RRF-fused order (sorted by `rrf_score` for readability — the raw fusion order
+    is Map insertion order, not a ranking), the post-ranker order, and the post-rerank
+    order. Wired through `about-me.js` -> `state.retrievalDebug` (per-turn reset) ->
+    `toTurn()` -> `POST /chat`'s response as an extra field, never the normal shape;
+    `stats_and_docs` carries it through from the `about_me` half. Deliberately **not**
+    wired into `POST /runs`/`GET /runs/:runId` — `runs.js`'s whole design is a redaction
+    whitelist bounded by `MOONMIND_RUN_RETENTION_DAYS`, and a multi-stage per-arm trace is
+    exactly the kind of thing that whitelist exists to keep out of durable-ish storage.
+    `scripts/retrieval-ab.js` calls `retrieve()` directly with `debug: true` rather than
+    going through HTTP, so it needs no server and no flag flip.

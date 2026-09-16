@@ -67,16 +67,16 @@ function createAboutMeNode(deps = {}) {
         if (!query) {
           return { documents: [], failedArms: [] };
         }
-        return run(query, { models, config });
+        return run(query, { models, config, debug: config.retrieval.debugEnabled });
       }).withConfig({ runName: "about_me.retrieve" }),
 
-      // Only `documents`: the answer belongs to `generate`, which is what lets
-      // stats_and_docs reuse this node alongside the stats one.
+      // `documents` plus the optional debug trace: the answer belongs to `generate`,
+      // which is what lets stats_and_docs reuse this node alongside the stats one.
       RunnableLambda.from(function toState(result) {
         if (result.failedArms?.length) {
           console.warn("agent.about_me.degraded", { failedArms: result.failedArms });
         }
-        return { documents: result.documents ?? [] };
+        return { documents: result.documents ?? [], retrievalDebug: result.debug ?? null };
       }).withConfig({ runName: "about_me.to_state" }),
     ],
     // Deliberately unnamed. A runnable named exactly `about_me` is indistinguishable

@@ -117,6 +117,7 @@ function toTurn({ sessionId, runId, state }) {
     answer: result.finalAnswer ?? null,
     documents: result.documents ?? [],
     statsPayload: result.statsPayload ?? null,
+    retrievalDebug: result.retrievalDebug ?? null,
     error: result.error ?? null,
   };
 }
@@ -127,7 +128,7 @@ function toTurn({ sessionId, runId, state }) {
  * @param {{ sessionId: string, message: string }} turn
  * @param {{ graph?: object }} [deps] Injected compiled graph, for tests and evals.
  * @returns {Promise<{sessionId, runId, route, routeConfidence, answer, documents,
- *   statsPayload, error}>}
+ *   statsPayload, retrievalDebug, error}>}
  */
 async function runTurn({ sessionId, message }, deps = {}) {
   const graph = deps.graph ?? (await getCompiledGraph());

@@ -53,6 +53,35 @@ function unionDocuments(groups) {
   return [...merged.values()];
 }
 
+/** Reduce a document list to `{id, title}` — never the content. */
+function idTitle(documents = []) {
+  return documents.map((document) => ({ id: document.id, title: document.title }));
+}
+
+/**
+ * Trace every stage of the pipeline for one call. Ids and titles only — never full
+ * documents — so this is safe to hand back over HTTP (see `http/chat.js`, behind
+ * `MOONMIND_RETRIEVAL_DEBUG`) and to log from `scripts/retrieval-ab.js`.
+ */
+function buildDebugTrace({ perSubquery, unioned, ranked, documents }) {
+  return {
+    arms: perSubquery.flatMap((entry, subqueryIndex) =>
+      (entry.armHits ?? []).map(({ source, hits }) => ({
+        subquery: subqueryIndex,
+        source,
+        hits,
+      })),
+    ),
+    // Sorted by rrf_score for readability — the raw fusion order is insertion order,
+    // which says nothing about relevance on its own.
+    fused: [...unioned]
+      .sort((left, right) => (right.rrf_score ?? 0) - (left.rrf_score ?? 0))
+      .map((document) => ({ id: document.id, title: document.title, rrfScore: document.rrf_score ?? 0 })),
+    ranked: ranked.map((document) => ({ id: document.id, title: document.title, score: document.score ?? 0 })),
+    reranked: idTitle(documents),
+  };
+}
+
 /**
  * Retrieve documents for a query.
  *
@@ -65,7 +94,10 @@ function unionDocuments(groups) {
  * @param {object} [options.config] Injected config, for tests.
  * @param {object} [options.collection] Injected Mongo collection, for tests.
  * @param {object} [options.embedder] Injected embedder, for tests.
- * @returns {Promise<{documents, sanitized, subqueries, plans, arms, failedArms}>}
+ * @param {boolean} [options.debug] Include a per-stage trace (ids/titles only) under
+ *   `debug` in the result — per-arm hits, the RRF-fused order, the post-ranker order and
+ *   the post-rerank order. Off by default; costs one extra sort over data already fetched.
+ * @returns {Promise<{documents, sanitized, subqueries, plans, arms, failedArms, debug?}>}
  */
 async function retrieve(query, options = {}) {
   const config = options.config ?? getConfig();
@@ -122,7 +154,7 @@ async function retrieve(query, options = {}) {
       )
     : ranked.slice(0, finalLimit);
 
-  return {
+  const result = {
     documents,
     sanitized: sanitizeForPrompt(documents),
     subqueries,
@@ -130,6 +162,12 @@ async function retrieve(query, options = {}) {
     arms: perSubquery.flatMap((entry) => entry.arms ?? []),
     failedArms: perSubquery.flatMap((entry) => entry.failed ?? []),
   };
+
+  if (options.debug) {
+    result.debug = buildDebugTrace({ perSubquery, unioned, ranked, documents });
+  }
+
+  return result;
 }
 
-module.exports = { retrieve, unionDocuments };
+module.exports = { retrieve, unionDocuments, buildDebugTrace };
