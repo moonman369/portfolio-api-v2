@@ -139,6 +139,11 @@ const envSchema = z.object({
   // How many recent messages are replayed to a model. `summary` covers the rest
   // once history outgrows this (populated from Phase 3b).
   MOONMIND_HISTORY_MAX_MESSAGES: positiveInt.default(20),
+  // How many of those the ROUTER sees, compacted into a context block. Narrower than the
+  // full cap on purpose: the router needs the last exchange or two to resolve "just the
+  // link", and more than that starts drowning the message it is supposed to classify.
+  // Capped by MOONMIND_HISTORY_MAX_MESSAGES at use, so this can only ever narrow.
+  MOONMIND_ROUTER_HISTORY_MESSAGES: positiveInt.default(6),
   MOONMIND_RUN_TIMEOUT_MS: positiveInt.default(120_000),
   MOONMIND_AGENT_MAX_STEPS: positiveInt.max(20).default(4),
   // The scope guard: one cheap classification before an agent dispatches any tool.
@@ -287,6 +292,7 @@ function loadConfig(env) {
       topicChangeConfidence: raw.MOONMIND_TOPIC_CHANGE_CONFIDENCE,
       maxMessageChars: raw.MOONMIND_MAX_MESSAGE_CHARS,
       historyMaxMessages: raw.MOONMIND_HISTORY_MAX_MESSAGES,
+      routerHistoryMessages: raw.MOONMIND_ROUTER_HISTORY_MESSAGES,
       runTimeoutMs: raw.MOONMIND_RUN_TIMEOUT_MS,
       recursionLimit: raw.MOONMIND_RECURSION_LIMIT,
       // How many model calls one agent node gets per run. Each tool-calling round is

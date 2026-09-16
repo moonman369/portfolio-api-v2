@@ -18,12 +18,19 @@ const { HumanMessage, AIMessage } = require("@langchain/core/messages");
 
 const { createRouterNode, LOW_CONFIDENCE_ROUTE } = require("../../src/agent/nodes/router");
 const { createGenerateNode } = require("../../src/agent/nodes/generate");
-const { refusal, listCapabilities, makeStubNode } = require("../../src/agent/nodes/simple");
+const {
+  refusal,
+  listCapabilities,
+  greeting,
+  makeStubNode,
+} = require("../../src/agent/nodes/simple");
 const { ROUTES, recentMessages } = require("../../src/agent/state");
 const {
   NOT_IMPLEMENTED_ANSWER,
   REFUSAL_ANSWER,
   ERROR_ANSWER,
+  HIDDEN_CAPABILITIES,
+  GREETINGS,
 } = require("../../src/agent/prompts");
 
 /** A model whose withStructuredOutput().invoke() resolves to `output`, or throws. */
@@ -190,9 +197,37 @@ test("list_capabilities is templated from the route enum", async () => {
 
   assert.ok(finalAnswer.includes("GitHub"), "mentions stats");
   assert.ok(finalAnswer.includes("book time"), "mentions booking");
-  // One bullet per advertised route: all routes except refusal and list_capabilities.
+  // One bullet per advertised route: every route except the hidden ones.
   const bullets = finalAnswer.split("\n").filter((line) => line.startsWith("- "));
-  assert.equal(bullets.length, ROUTES.length - 2);
+  assert.equal(bullets.length, ROUTES.length - HIDDEN_CAPABILITIES.length);
+  assert.ok(!finalAnswer.includes("Hey"), "greeting is not advertised as a capability");
+});
+
+test("a greeting gets a greeting, not the capability menu", async () => {
+  // "Hey" used to return the seven-item menu — twice in the same session.
+  const { finalAnswer } = await greeting({ messages: [new HumanMessage("Hey!")] });
+
+  const bullets = finalAnswer.split("\n").filter((line) => line.startsWith("- "));
+  assert.equal(bullets.length, 0, "no capability list");
+  assert.ok(finalAnswer.length < 200, "short");
+  assert.ok(GREETINGS.includes(finalAnswer), "one of the fixed set");
+});
+
+test("a repeat greeting in one session is not word-for-word identical", async () => {
+  const first = await greeting({ messages: [new HumanMessage("Hey")] });
+  // Later in the same conversation: two turns have accumulated four messages.
+  const later = await greeting({
+    messages: [
+      new HumanMessage("Hey"),
+      new AIMessage(first.finalAnswer),
+      new HumanMessage("Ayan's resume"),
+      new AIMessage("...an answer..."),
+      new HumanMessage("Hey"),
+    ],
+  });
+
+  assert.notEqual(later.finalAnswer, first.finalAnswer);
+  assert.ok(GREETINGS.includes(later.finalAnswer));
 });
 
 test("stub nodes answer without clobbering router slots", async () => {
@@ -282,20 +317,24 @@ test("the router never sees MoonMind's own canned dead-ends", async () => {
   );
 
   const sent = model.seen[0];
-  const contents = sent.map((message) => String(message.content));
+  const everything = sent.map((message) => String(message.content)).join("\n");
 
-  assert.ok(!contents.includes(REFUSAL_ANSWER), "the refusal answer is filtered out");
-  assert.ok(!contents.includes(NOT_IMPLEMENTED_ANSWER), "the stub answer is filtered out");
-  assert.ok(!contents.includes(ERROR_ANSWER), "the error answer is filtered out");
+  assert.ok(!everything.includes(REFUSAL_ANSWER), "the refusal answer is filtered out");
+  assert.ok(!everything.includes(NOT_IMPLEMENTED_ANSWER), "the stub answer is filtered out");
+  assert.ok(!everything.includes(ERROR_ANSWER), "the error answer is filtered out");
 
-  // Every human turn survives: they are what the router actually classifies against.
+  // Every human turn survives — the earlier ones as `user:` lines in the context block,
+  // the latest as the message actually being classified.
+  ["give me Ayan's resume", "his cv please", "and this one errored"].forEach((turn) => {
+    assert.ok(everything.includes(`user: ${turn}`), `earlier turn kept as context: ${turn}`);
+  });
+
   const humanTurns = sent.filter((message) => message.getType() === "human");
-  assert.deepEqual(humanTurns.map((message) => String(message.content)), [
-    "give me Ayan's resume",
-    "his cv please",
-    "and this one errored",
-    "Ayan's resume",
-  ]);
+  assert.deepEqual(
+    humanTurns.map((message) => String(message.content)),
+    ["Ayan's resume"],
+    "exactly one HumanMessage: the message being classified",
+  );
 });
 
 test("the router still sees real answers, so follow-ups stay resolvable", async () => {
@@ -317,6 +356,101 @@ test("the router still sees real answers, so follow-ups stay resolvable", async 
     }),
   );
 
-  const contents = model.seen[0].map((message) => String(message.content));
-  assert.ok(contents.includes(realAnswer), "a genuine answer is context, not contamination");
+  const everything = model.seen[0].map((message) => String(message.content)).join("\n");
+  assert.ok(
+    everything.includes(`assistant: ${realAnswer}`),
+    "a genuine answer is context, not contamination",
+  );
+});
+
+test("the router is given the message to classify, not a transcript to wade through", async () => {
+  // The bug this fixes: raw history meant the live message was 0.9% of the router's
+  // input (55 chars of 5857) and lost to the assistant's own prose. It classified
+  // `refusal` at 1.00 three times out of three; the same message alone gave about_me.
+  const model = fakeRouterModel({
+    route: "about_me",
+    confidence: 0.9,
+    which: null,
+    cancelsActiveFlow: false,
+  });
+  const longAnswer = `Here is a resume overview. ${"Ayan builds microservices. ".repeat(80)}`;
+
+  await createRouterNode({ model })(
+    baseState({
+      messages: [
+        new HumanMessage("Ayan's resume"),
+        new AIMessage(longAnswer),
+        new HumanMessage("Not the Resume overview.... I want just the resume link"),
+      ],
+      previousRoute: "about_me",
+    }),
+  );
+
+  const sent = model.seen[0];
+  const everything = sent.map((message) => String(message.content)).join("\n");
+
+  assert.ok(!everything.includes(longAnswer), "the long answer is clipped, not replayed");
+  assert.ok(everything.includes("previous turn was routed to `about_me`"), "previous route is stated");
+  assert.equal(
+    String(sent[sent.length - 1].content),
+    "Not the Resume overview.... I want just the resume link",
+    "the message being classified is the last thing the model sees",
+  );
+});
+
+test("an unsure follow-up continues the previous route instead of refusing", async () => {
+  // "no, just the link" after an about_me turn. The live failure came back at confidence
+  // 1.00, which no floor catches — the context block and the prompt rules cover that. This
+  // is the net underneath: when the model is genuinely unsure, continue the exchange.
+  const model = fakeRouterModel({
+    route: "refusal",
+    confidence: 0.3,
+    which: null,
+    cancelsActiveFlow: false,
+  });
+
+  const result = await createRouterNode({ model })(
+    baseState({
+      messages: [
+        new HumanMessage("Ayan's resume"),
+        new AIMessage("Here is an overview of his resume..."),
+        new HumanMessage("no, just the link"),
+      ],
+      previousRoute: "about_me",
+    }),
+  );
+
+  assert.equal(result.route, "about_me");
+});
+
+test("an unsure turn never inherits a route that refuses or acts", async () => {
+  const unsure = { confidence: 0.2, which: null, cancelsActiveFlow: false };
+
+  for (const previousRoute of ["refusal", "greeting", "book_catchup", "send_mail", null]) {
+    const model = fakeRouterModel({ route: "refusal", ...unsure });
+    const result = await createRouterNode({ model })(
+      baseState({ messages: [new HumanMessage("hmm")], previousRoute }),
+    );
+
+    assert.equal(
+      result.route,
+      LOW_CONFIDENCE_ROUTE,
+      `previousRoute=${previousRoute} must not be inherited`,
+    );
+  }
+});
+
+test("a first turn sends no conversation context at all", async () => {
+  const model = fakeRouterModel({
+    route: "about_me",
+    confidence: 0.9,
+    which: null,
+    cancelsActiveFlow: false,
+  });
+
+  await createRouterNode({ model })(baseState({ messages: [new HumanMessage("Ayan's resume")] }));
+
+  const sent = model.seen[0];
+  assert.equal(sent.length, 2, "system prompt plus the message — no empty context heading");
+  assert.ok(!String(sent[0].content).includes("CONTEXT - the conversation so far"));
 });

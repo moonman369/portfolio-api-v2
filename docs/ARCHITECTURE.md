@@ -166,7 +166,8 @@ guard (non-LLM: length cap, rate limit, auth)  [existing http-layer checks, unch
       ├── agent        → ONE bounded agent (4 tools) → generate
       ├── action       → sub-branch inside the node: 'book' | 'mail'
       ├── refusal      → templated, no LLM call
-      └── capabilities → templated, no LLM call
+      ├── capabilities → templated, no LLM call
+      └── greeting     → templated, no LLM call
 ```
 
 - `about_me` and `complex` merge into **`knowledge`** — the boundary between them was
@@ -178,13 +179,24 @@ guard (non-LLM: length cap, rate limit, auth)  [existing http-layer checks, unch
   deterministic. Neither is an agent — no calendar tool, no confirmation step.
 - Escalation: `knowledge` may hand off to `agent` **once per turn**, budget enforced in
   state. No other node escalates; `agent` never escalates back.
+- **`greeting`** is templated alongside `refusal` and `capabilities` (added Phase 6.5).
+  "Hey" is a greeting, not a request for the feature list — answering it with the
+  capability menu was a live bug. `capabilities` stays for the explicit ask.
+
+**Conversation context.** The router classifies the latest message against a compacted
+block of the recent conversation plus `previousRoute`, not against raw history. Raw
+history was measurably worse than none: at the turn that motivated Phase 6.5 the live
+message was 0.9% of the router's input and classified `refusal` at confidence 1.00, where
+the same message alone classified `about_me`. Earlier messages are clipped; the message
+being classified is passed separately, last.
 
 State fields (supersedes LLD §3): `sessionId`, `rawQuery`, `messages`, `route`,
 `routeConfidence`, `slots`, `documents`, `statsPayload`, `searchResults`, `summary`,
-**`finalAnswer`**, **`error`**, **`activeFlow`**, **`agentEscalationUsed`** (the
-`knowledge`→`agent` handoff budget, reset per turn). `pendingConfirmation` is dropped —
-`action`'s `book` branch returns a templated link with no confirmation step, and `mail` is
-deterministic.
+**`finalAnswer`**, **`error`**, **`activeFlow`**, **`previousRoute`** (the route the last
+turn took — written by `generate`, outside the per-turn reset, so a refinement can inherit
+it), **`agentEscalationUsed`** (the `knowledge`→`agent` handoff budget, reset per turn).
+`pendingConfirmation` is dropped — `action`'s `book` branch returns a templated link with
+no confirmation step, and `mail` is deterministic.
 
 ---
 

@@ -29,10 +29,31 @@ const ROUTES = Object.freeze([
   "book_catchup",
   "send_mail",
   "list_capabilities",
+  // Templated, like refusal and list_capabilities. "Hey" used to reach
+  // list_capabilities and get answered with the full seven-item menu; a greeting is a
+  // greeting, not a request for the feature list. Phase 7 folds this into the new
+  // taxonomy alongside `refusal` and `capabilities`.
+  "greeting",
 ]);
 
 /** Routes that perform a side effect, and so must never be reached by a guess. */
 const ACTION_ROUTES = Object.freeze(["book_catchup", "send_mail"]);
+
+/**
+ * Routes an unsure turn may inherit from the previous one.
+ *
+ * Deliberately excludes the action routes (a guess must never cause a side effect) and
+ * the templated ones: inheriting `refusal` is how a single refusal turns into a session
+ * of them, and inheriting `greeting` or `list_capabilities` would answer a real question
+ * with a pleasantry.
+ */
+const INHERITABLE_ROUTES = Object.freeze(
+  ROUTES.filter(
+    (route) =>
+      !ACTION_ROUTES.includes(route) &&
+      !["refusal", "greeting", "list_capabilities"].includes(route),
+  ),
+);
 
 /** Last-write-wins channel. Most per-turn fields want exactly this. */
 function lastValue(defaultValue) {
@@ -62,6 +83,11 @@ const State = Annotation.Root({
   pendingConfirmation: lastValue(null),
   activeFlow: lastValue(null),
   summary: lastValue(null),
+  // The route the PREVIOUS turn took. Written by `generate` (the one node every branch
+  // converges on) and deliberately absent from PER_TURN_RESET, so the router can read it
+  // after `route` itself has been cleared for this turn. It is what lets a refinement
+  // like "no, just the link" inherit the route of the exchange it is refining.
+  previousRoute: lastValue(null),
 
   finalAnswer: lastValue(null),
   error: lastValue(null),
@@ -71,7 +97,7 @@ const State = Annotation.Root({
  * Fields `runTurn` clears on every turn. Without this the checkpointer would carry the
  * previous turn's documents, stats and answer into the next one on the same session.
  * Everything absent from this list — messages, slots, pendingConfirmation, activeFlow,
- * summary — is meant to persist.
+ * summary, previousRoute — is meant to persist.
  */
 const PER_TURN_RESET = Object.freeze({
   route: null,
@@ -92,4 +118,11 @@ function recentMessages(messages, limit) {
   return limit > 0 && messages.length > limit ? messages.slice(-limit) : messages;
 }
 
-module.exports = { State, ROUTES, ACTION_ROUTES, PER_TURN_RESET, recentMessages };
+module.exports = {
+  State,
+  ROUTES,
+  ACTION_ROUTES,
+  INHERITABLE_ROUTES,
+  PER_TURN_RESET,
+  recentMessages,
+};

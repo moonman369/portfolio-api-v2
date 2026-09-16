@@ -255,3 +255,21 @@ test("buildContextBlocks always leads with the date", () => {
 
   assert.match(blocks[0], /today's date/);
 });
+
+test("generate records this turn's route for the next turn's router", async () => {
+  // `route` is cleared by PER_TURN_RESET before the router runs, so the only way it can
+  // know what the last exchange was about is if generate carries it across.
+  const model = { invoke: async () => ({ content: "An answer." }) };
+
+  const synthesized = await createGenerateNode({ model, config: CONFIG })(
+    state({ route: "about_me", documents: [doc("a")] }),
+  );
+  assert.equal(synthesized.previousRoute, "about_me");
+
+  // The pass-through path too: templated and agentic branches answer without a model,
+  // and they are exactly the routes a follow-up is most likely to arrive after.
+  const passedThrough = await createGenerateNode({ model, config: CONFIG })(
+    state({ route: "tech_web", finalAnswer: "already answered" }),
+  );
+  assert.equal(passedThrough.previousRoute, "tech_web");
+});

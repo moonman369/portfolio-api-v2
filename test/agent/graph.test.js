@@ -152,6 +152,37 @@ test("per-turn fields do not leak across two turns on one sessionId", async () =
   assert.equal(second.error, null);
 });
 
+test("previousRoute survives the reset that clears route", async () => {
+  // The whole point of the field: `route` is cleared before the router runs, so the only
+  // way a follow-up can know what the last exchange was about is if this one persists.
+  const checkpointer = new MemorySaver();
+  const seenPreviousRoutes = [];
+  let currentRoute = "about_me";
+
+  const { nodes } = fakeNodes({
+    router: async (state) => {
+      seenPreviousRoutes.push(state.previousRoute ?? null);
+      return { route: currentRoute, routeConfidence: 1 };
+    },
+    about_me: async () => ({ documents: [] }),
+    generate: async (state) => ({ previousRoute: state.route ?? null, finalAnswer: "answered" }),
+  });
+  const graph = buildGraph({ nodes, checkpointer, topicChangeConfidence: TOPIC_CHANGE_CONFIDENCE });
+
+  const first = await graph.invoke(turn("Ayan's resume"), config("carries"));
+  assert.equal(first.route, "about_me");
+  assert.equal(first.previousRoute, "about_me");
+
+  const second = await graph.invoke(turn("no, just the link"), config("carries"));
+
+  assert.deepEqual(
+    seenPreviousRoutes,
+    [null, "about_me"],
+    "the second turn's router sees what the first turn answered",
+  );
+  assert.equal(second.previousRoute, "about_me");
+});
+
 test("messages persist across turns in the checkpointer", async () => {
   const checkpointer = new MemorySaver();
   const { nodes } = fakeNodes({ router: async () => ({ route: "refusal", routeConfidence: 1 }) });

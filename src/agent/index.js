@@ -20,7 +20,7 @@ const { createAboutMeNode } = require("./nodes/about-me");
 const { makeAgentNode } = require("./nodes/agents");
 const { TOOLSETS } = require("./tools");
 const { TECH_WEB_SYSTEM_PROMPT } = require("./prompts");
-const { refusal, listCapabilities, makeStubNode } = require("./nodes/simple");
+const { refusal, listCapabilities, greeting, makeStubNode } = require("./nodes/simple");
 
 // Routes whose real implementation lands in a later phase (6b, 7).
 const STUBBED_ROUTES = Object.freeze(["complex", "book_catchup", "send_mail"]);
@@ -32,6 +32,7 @@ function createNodes() {
     generate: createGenerateNode(),
     refusal,
     list_capabilities: listCapabilities,
+    greeting,
   };
 
   STUBBED_ROUTES.forEach((route) => {

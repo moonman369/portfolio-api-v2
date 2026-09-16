@@ -5,11 +5,11 @@
 // about which node that maps to belongs to `routeFromState` in graph.js.
 
 const { z } = require("zod");
-const { SystemMessage } = require("@langchain/core/messages");
+const { HumanMessage, SystemMessage } = require("@langchain/core/messages");
 const { getConfig } = require("../../config");
 const { getModel } = require("../models");
-const { ROUTES, ACTION_ROUTES, recentMessages } = require("../state");
-const { ROUTER_SYSTEM_PROMPT, CANNED_DEAD_ENDS } = require("../prompts");
+const { ROUTES, INHERITABLE_ROUTES, recentMessages } = require("../state");
+const { ROUTER_SYSTEM_PROMPT, buildRouterContext, CANNED_DEAD_ENDS } = require("../prompts");
 
 // Flat on purpose: models fill a flat object far more reliably than a nested one.
 // `which` is lifted into `slots` before it reaches state.
@@ -36,17 +36,21 @@ function toSlots({ route, which }) {
 /**
  * Apply the low-confidence rule.
  *
- * Below the threshold the turn is redirected to about_me. Action routes are covered by
- * the same rule for a second reason: book_catchup and send_mail have side effects, so
- * they must never be reached by a guess.
+ * Below the threshold the classification is discarded. What replaces it is the previous
+ * turn's route when there is a safe one — an unsure turn in the middle of an exchange is
+ * far more likely to be continuing it than starting something new, and this is what stops
+ * a terse follow-up from landing on `refusal`. Otherwise it falls to about_me, which is
+ * the most common intent, is grounded in retrieved documents, and has no side effects.
+ *
+ * Note this only covers the UNSURE case. The failure that prompted it came back at
+ * confidence 1.00, which no floor catches; the conversation context and the prompt rules
+ * are what address that. This is the safety net under them, not the fix.
  */
-function applyConfidenceFloor(route, confidence, minConfidence) {
+function applyConfidenceFloor(route, confidence, minConfidence, previousRoute) {
   if (confidence >= minConfidence) {
     return route;
   }
-  return ACTION_ROUTES.includes(route) || route !== LOW_CONFIDENCE_ROUTE
-    ? LOW_CONFIDENCE_ROUTE
-    : route;
+  return INHERITABLE_ROUTES.includes(previousRoute) ? previousRoute : LOW_CONFIDENCE_ROUTE;
 }
 
 const isAiMessage = (message) =>
@@ -77,6 +81,31 @@ function routerHistory(messages) {
 }
 
 /**
+ * Split the conversation into the message being classified and the turns behind it.
+ *
+ * The latest human message is pulled out and sent as the only real `HumanMessage`, with
+ * everything before it compacted into a context block. Passing raw history instead — which
+ * is what this node used to do — buried the question: measured on the session this fix
+ * came from, the live message was 0.9% of the router's input and lost to 5.8KB of the
+ * assistant's own prose.
+ */
+function splitForRouter(messages) {
+  const lastHumanIndex = messages.findLastIndex((message) => !isAiMessage(message));
+
+  if (lastHumanIndex === -1) {
+    return { current: "", turns: [] };
+  }
+
+  return {
+    current: String(messages[lastHumanIndex].content ?? ""),
+    turns: messages.slice(0, lastHumanIndex).map((message) => ({
+      role: isAiMessage(message) ? "assistant" : "user",
+      text: String(message.content ?? ""),
+    })),
+  };
+}
+
+/**
  * @param {object} [deps]
  * @param {object} [deps.model] Injected model; tests pass a fake with withStructuredOutput.
  */
@@ -85,8 +114,22 @@ function createRouterNode(deps = {}) {
     const { moonmind } = getConfig();
     const model = deps.model ?? getModel("router");
 
-    const history = routerHistory(recentMessages(state.messages, moonmind.historyMaxMessages));
-    const messages = [new SystemMessage(ROUTER_SYSTEM_PROMPT), ...history];
+    // The router's window is its own, but it can never exceed the conversation cap the
+    // rest of the graph respects — one history mechanism, narrowed, not a second one.
+    //
+    // Dead-ends are filtered BEFORE the window is applied, so a run of refusals cannot
+    // eat the budget and leave the router with no real context to resolve a follow-up
+    // against. The window is N useful messages, not N messages of which some are dropped.
+    const window = Math.min(moonmind.routerHistoryMessages, moonmind.historyMaxMessages);
+    const history = recentMessages(routerHistory(state.messages ?? []), window);
+    const { current, turns } = splitForRouter(history);
+    const context = buildRouterContext({ turns, previousRoute: state.previousRoute ?? null });
+
+    const messages = [
+      new SystemMessage(ROUTER_SYSTEM_PROMPT),
+      ...(context ? [new SystemMessage(context)] : []),
+      new HumanMessage(current),
+    ];
 
     let output;
     try {
@@ -100,8 +143,15 @@ function createRouterNode(deps = {}) {
         sessionId: state.sessionId,
         reason: error?.message,
       });
+      // Confidence 0 through the same rule the unsure path uses, so a failed
+      // classification mid-exchange continues that exchange rather than resetting it.
       return {
-        route: LOW_CONFIDENCE_ROUTE,
+        route: applyConfidenceFloor(
+          LOW_CONFIDENCE_ROUTE,
+          0,
+          moonmind.routerMinConfidence,
+          state.previousRoute ?? null,
+        ),
         routeConfidence: 0,
         slots: {},
       };
@@ -111,6 +161,7 @@ function createRouterNode(deps = {}) {
       output.route,
       output.confidence,
       moonmind.routerMinConfidence,
+      state.previousRoute ?? null,
     );
 
     return {
@@ -121,4 +172,10 @@ function createRouterNode(deps = {}) {
   };
 }
 
-module.exports = { createRouterNode, RouterOutputSchema, LOW_CONFIDENCE_ROUTE };
+module.exports = {
+  createRouterNode,
+  RouterOutputSchema,
+  LOW_CONFIDENCE_ROUTE,
+  routerHistory,
+  splitForRouter,
+};

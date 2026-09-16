@@ -154,6 +154,21 @@ and `k`, recorded in Decisions.
 **Done when:** docs match the new plan; debug mode returns per-stage ordering;
 `retrieval-ab.md` covers all four configs plus recall headroom; the gate is answered.
 
+### `[x]` Phase 6.5 — Conversation context hotfix
+*Behaviour only, on four bugs from a real session
+(`bd2d83a7-275a-450d-8a8c-dd97b74982b5`). No routes collapsed, no agent built, no
+escalation — those stay Phases 7-9.*
+**Scope:** the router classifies against a compacted conversation block plus an explicit
+`previousRoute` instead of raw history; prompt rules for refinements, and `refusal`
+narrowed to off-topic/unsafe only. `generate` gains a narrowing rule and a links rule so a
+request for a link returns the URL rather than a summary of it. A templated `greeting`
+route, varied across a fixed set, replaces answering "Hey" with the capability menu.
+`scripts/router-eval.js` gains a multi-turn suite — the single-turn one could not see any
+of this.
+**Done when:** the seven-turn session replays clean; an offline test proves the router
+gets history and the previous route and that an unsure follow-up does not refuse;
+single-turn eval accuracy does not regress; `complex` still returns "not implemented yet".
+
 ### `[ ]` Phase 7 — Router (6 labels) + `knowledge` node
 **Scope:** router relabeled to 6 outputs: `knowledge`, `stats`, `agent`, `action`,
 `refusal`, `capabilities`. `about_me` and `complex`'s retrieval-only path merge into one
@@ -785,6 +800,103 @@ trace's scope (not wired into the run feed).
    2026-09-16, see the entry above, so this is now four — Phase 2's `stats-eval`, Phase
    3a's `retrieval-parity`, Phase 3b's `about-me-eval`), Phase 4's two live re-checks, and
    `npm test` being broken (`nodemon --test`).
+
+---
+
+### Phase 6.5 — Conversation context hotfix — 2026-09-16
+
+**Shipped.** Four live bugs from session `bd2d83a7-275a-450d-8a8c-dd97b74982b5`, fixed and
+verified by replaying all seven of its turns through the real graph. 348 offline tests pass
+(8 new). Router eval: **33/33 single prompts, 11/11 conversation turns.** No routes
+collapsed, no agent, no escalation — Phases 7-9 are untouched.
+
+**The investigation mattered more than the fixes.** Two of the four briefs' premises were
+wrong, and acting on them as written would have changed nothing:
+
+1. **"The router classifies each message in isolation" — it does not.** It had been
+   passing full history since Phase 1. Measured on the real turn: *with* history it
+   returned `refusal@1.00` three times out of three; the identical message with *no*
+   history returned `about_me@0.80` twice out of two. History was not missing, it was
+   **the cause** — the live message was 55 of 5857 characters, 0.9% of the router's input,
+   and the assistant's own resume prose drowned it.
+2. **"Ensure `external_links` survives the sanitizer" — it already did.** `rank.js`
+   passes `external_links` and every metadata date field through, verified live: 11 of the
+   15 documents retrieved for "Ayan's resume" carry links into the sanitized view, and the
+   top one carries the resume URL. Given that same context and no history, `generate`
+   already returned the correct URL in 220 characters. The failure was behavioural, not
+   plumbing — so this became a prompt fix, and the sanitizer was left alone.
+
+**Files.**
+- `src/agent/nodes/router.js` — `splitForRouter` pulls out the message being classified
+  and compacts everything before it; dead-ends are filtered *before* the window is applied
+  so a run of refusals cannot eat the budget; `applyConfidenceFloor` now prefers
+  `previousRoute` over a blanket `about_me`, and the error path uses the same rule.
+- `src/agent/prompts.js` — `buildRouterContext` (compact turns + previous route, clipped
+  at 200 chars each); router rules for refinements and a narrowed `refusal`; generate rules
+  for narrowing and for links; `GREETINGS` + `buildGreetingAnswer`.
+- `src/agent/nodes/generate.js` — records `previousRoute` on both the synthesis and the
+  pass-through path.
+- `src/agent/nodes/simple.js` — the `greeting` node.
+- `src/agent/state.js` — the `greeting` route, the `previousRoute` field (outside
+  `PER_TURN_RESET`), and `INHERITABLE_ROUTES`.
+- `src/agent/index.js`, `src/config.js`, `.env.example`, `docs/ARCHITECTURE.md`.
+- `scripts/router-eval.js` — the multi-turn suite, four `greeting` prompts, and the
+  `require("dotenv")` line deleted (Phase 5's open item 5: it violated the no-dotenv rule,
+  did nothing, and would have broken a clean `npm ci`).
+- Tests: `test/agent/nodes.test.js` (+6), `graph.test.js` (+1), `about-me.test.js` (+1).
+
+**Env vars.** One added, total 80: `MOONMIND_ROUTER_HISTORY_MESSAGES` (default 6). It is
+clamped by `MOONMIND_HISTORY_MAX_MESSAGES` at use, so it can only ever narrow the existing
+window — no second history mechanism.
+
+**The replay, before and after** (live, real models, real Atlas):
+
+| turn | message | was | now |
+|---|---|---|---|
+| 1 | "Hey!" | `list_capabilities`, 7-item menu | `greeting`, 85 chars |
+| 2 | "Ayan's resume" | overview, 15 docs | the resume URL, 118 chars |
+| 3 | "Give me only the resume please" | same overview again | the URL |
+| 4 | "...no other link please" | same overview again | the URL |
+| 5 | "Not the Resume overview.... I want just the resume link" | **`refusal`** | `about_me`, the URL, 128 chars |
+| 6 | "Hey" | the same menu, verbatim | a *different* greeting |
+| 7 | "How have Ayan's AI skills evolved over time?" | `complex`, not implemented | unchanged — correct for now |
+
+**Why the multi-turn eval exists.** The single-turn suite classified turn 5 correctly in
+isolation and always would have: the bug only exists in context. A 29/29 green eval sat
+next to this bug for three days. The new suite threads history and the *actual* previous
+route turn by turn, so a wrong turn shows its knock-on effect instead of being silently
+corrected, and it carries the failing session verbatim as a fixture.
+
+**Deviations.** Two, recorded below (43-44).
+
+**Open items.**
+1. **⛔ Retrieval breadth (Fix 5) was deliberately not done — it needs your call.** The
+   gate is not broken, it is *disabled*: `MOONMIND_MIN_SEMANTIC_SCORE` defaults to 0 and
+   `rankDocuments` treats 0 as "no gate". Both it and `k` are already config-driven, so
+   there is no code to write — only a number to choose, and the Phase 6 data does not
+   support one. See Deviation 44 and the question at the end of this entry.
+2. **"Ayan's resume" now returns the link rather than a summary.** That is what the
+   visitor in this session spent four turns trying to get, so I read it as right — but it
+   is a judgement call the links rule makes on every bare "show me X" ask, not just on
+   explicit "give me the link" ones. One line in `GENERATE_SYSTEM_PROMPT` if you want
+   summary-plus-link instead.
+3. **`npm test` is fixed** (your commit `265d4a7`), closing an open item carried since
+   Phase 0. Phase 4's and Phase 5's handoffs still list it as broken; it is not.
+4. **Carried over:** Phase 0's deploy and parity run, Phase 2's `stats-eval`, Phase 3a's
+   `retrieval-parity`, Phase 3b's `about-me-eval`, Phase 4's two live re-checks, Phase 5's
+   live Tavily check.
+
+**The question for Fix 5.** Semantic scores on this corpus sit in a 0.81-0.88 band because
+every document is about the same person — absolute cosine cannot separate "answers this
+question" from "is about Ayan at all". For "Ayan's resume": 0.8814 top, 0.8519 second,
+then a flat plateau to 0.8087 at rank 30. A floor of ~0.84 gives a sensible 6 documents
+there, but applied to "backend technologies" it keeps 6 where Phase 6 measured **11**
+genuinely relevant — it would reverse the `k=15` decision from two commits ago. And
+enabling the floor at all silently drops every metadata-only hit, which has no semantic
+score by construction (`rank.js`, `computeBoost` comment). So the options are a relative
+gate (keep everything within X of the top score), a per-route `k`, or leaving it alone
+until Phase 7 gives `knowledge` its own retrieval settings. Picking a number by hand is
+exactly the "tune by feel" the brief ruled out, so I stopped here.
 
 ---
 
@@ -1606,3 +1718,27 @@ clean `npm ci`. One line to delete; left alone because it is outside what was as
     exactly the kind of thing that whitelist exists to keep out of durable-ish storage.
     `scripts/retrieval-ab.js` calls `retrieve()` directly with `debug: true` rather than
     going through HTTP, so it needs no server and no flag flip.
+
+## Phase 6.5 deviations from LLD
+
+43. **A tenth route, `greeting`,** and a `previousRoute` state field — neither in LLD §2
+    or §3. *Why:* `greeting` because answering "Hey" with the seven-item capability menu
+    was a live complaint, twice in one session, and a greeting is not a request for a
+    feature list. `previousRoute` because the LLD's state has no way to express "what the
+    last exchange was about", and without it a refinement like "just the link" is
+    classified against nothing. It is written by `generate` — the one node every branch
+    converges on — and deliberately sits outside `PER_TURN_RESET`, which is what lets it
+    survive into the next turn after `route` itself is cleared. Both fold into the Phase 7
+    taxonomy: `greeting` as a templated route beside `refusal` and `capabilities`.
+44. **The router is given compacted context, not the conversation.** The LLD and
+    ARCHITECTURE §5 both assume "history sent to models capped at N turns" is enough. For
+    the *response* model it is; for the *router* it is actively harmful. Measured: with
+    raw history the live message was 0.9% of the router's input and it returned
+    `refusal@1.00` 3/3; the same message alone returned `about_me@0.80` 2/2. So the router
+    gets its own narrower window (`MOONMIND_ROUTER_HISTORY_MESSAGES`, clamped by the
+    existing cap — a narrowing, not a second mechanism), each earlier message clipped to
+    200 characters, rendered as `role: text` lines, with the message being classified
+    passed separately and last. **The general lesson, and the second time this project has
+    learned it** (see the 2026-09-16 out-of-band entry): when a classifier misbehaves, the
+    input is a likelier culprit than the prompt, and prompt wording could not fix either
+    case.

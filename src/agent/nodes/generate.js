@@ -52,8 +52,13 @@ function buildContextBlocks(state, { now } = {}) {
 
 function createGenerateNode(deps = {}) {
   return async function generate(state) {
+    // Every branch converges here, and `route` still holds this turn's value, so this is
+    // the one place that can hand the next turn's router what it was. `previousRoute` is
+    // outside PER_TURN_RESET, so it survives into the next turn on this session.
+    const carry = { previousRoute: state.route ?? null };
+
     if (state.finalAnswer) {
-      return { messages: [new AIMessage(state.finalAnswer)] };
+      return { ...carry, messages: [new AIMessage(state.finalAnswer)] };
     }
 
     const { moonmind } = deps.config ?? getConfig();
@@ -74,7 +79,7 @@ function createGenerateNode(deps = {}) {
       throw new Error("Response model returned empty content");
     }
 
-    return { finalAnswer: answer, messages: [new AIMessage(answer)] };
+    return { ...carry, finalAnswer: answer, messages: [new AIMessage(answer)] };
   };
 }
 
