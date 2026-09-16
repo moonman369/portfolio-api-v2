@@ -188,8 +188,15 @@ async function startRun({ runId, sessionId, question }, deps = {}) {
     status: "running",
     route: null,
     answer: null,
-    // Ids, not the documents themselves: enough to see what grounded an answer without
-    // making this a second copy of the corpus. `/chat` is where full documents live.
+    // The documents that grounded the answer, stored so a caller driving the feed gets
+    // the same payload `/chat` returns and never has to run the graph twice to get it.
+    //
+    // This reverses Phase 4's "ids, not documents" decision, on Ayan's call (2026-09-15)
+    // once the frontend moved to the feed as its only chat path. The original reasoning —
+    // do not make this a second copy of the corpus — still stands as a cost, but it is
+    // bounded: these rows expire with `MOONMIND_RUN_RETENTION_DAYS`, and the alternative
+    // was either losing source rendering in the UI or paying for every answer twice.
+    documents: [],
     documentIds: [],
     documentCount: 0,
     error: null,
@@ -230,6 +237,9 @@ async function finishRun({ runId, turn }, deps = {}) {
         status: turn?.error ? "failed" : "done",
         route: turn?.route ?? null,
         answer: turn?.answer ?? null,
+        // Stored as the graph produced them. The HTTP layer applies exactly the same
+        // shaping `/chat` does on the way out, so the two payloads cannot drift.
+        documents,
         documentIds: documents.map((document) => document?.id ?? null).filter(Boolean),
         documentCount: documents.length,
         error: turn?.error ? { node: turn.error.node ?? null, message: summarizeError(turn.error) } : null,

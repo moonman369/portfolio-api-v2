@@ -7,7 +7,12 @@ const assert = require("node:assert/strict");
 const { MemorySaver } = require("@langchain/langgraph");
 const { HumanMessage } = require("@langchain/core/messages");
 
-const { buildGraph, routeFromState, ROUTE_TO_NODE } = require("../../src/agent/graph");
+const {
+  buildGraph,
+  routeFromState,
+  describeUpdate,
+  ROUTE_TO_NODE,
+} = require("../../src/agent/graph");
 const { ROUTES, PER_TURN_RESET } = require("../../src/agent/state");
 const { ERROR_ANSWER } = require("../../src/agent/prompts");
 
@@ -231,4 +236,74 @@ test("a router failure skips the branch so its answer is not overwritten", () =>
     routing,
   );
   assert.equal(node, "generate");
+});
+
+// ---------------------------------------------------------------------------
+// Debug tracing
+// ---------------------------------------------------------------------------
+
+test("describeUpdate reports what a node decided, richly enough to debug it", () => {
+  const described = describeUpdate({
+    route: "about_me",
+    routeConfidence: 0.9,
+    slots: { which: "github" },
+    documents: [{ id: "a" }, { id: "b" }],
+    finalAnswer: "Ayan works mostly in Java.",
+  });
+
+  assert.equal(described.route, "about_me");
+  assert.equal(described.confidence, 0.9);
+  // Unlike the persisted feed's summary, slot VALUES are kept: the server log is where
+  // you find out the router filled `which` with the wrong source.
+  assert.deepEqual(described.slots, { which: "github" });
+  assert.equal(described.documents, 2);
+  assert.deepEqual(described.documentIds, ["a", "b"]);
+  assert.equal(described.answerChars, 26);
+  assert.match(described.answerPreview, /^Ayan works/);
+});
+
+test("describeUpdate is a whitelist, so an unexpected shape cannot leak a secret", () => {
+  // `about_me.prepare` genuinely returns the resolved config. The boundary only wraps
+  // nodes, but a blind serializer here would still be one refactor away from printing
+  // every API key the process holds.
+  const described = describeUpdate({
+    query: "what has Ayan built",
+    models: { response: "gpt-4o-mini" },
+    config: { openai: { apiKey: "sk-super-secret" }, tavily: { apiKey: "tvly-secret" } },
+  });
+
+  assert.deepEqual(described, {});
+  assert.ok(!JSON.stringify(described).includes("secret"));
+});
+
+test("describeUpdate tolerates an absent or malformed update", () => {
+  assert.deepEqual(describeUpdate(null), {});
+  assert.deepEqual(describeUpdate("nonsense"), {});
+  assert.deepEqual(describeUpdate({}), {});
+});
+
+test("the answer preview is bounded", () => {
+  const described = describeUpdate({ finalAnswer: "x".repeat(5000) });
+
+  assert.equal(described.answerChars, 5000);
+  assert.ok(described.answerPreview.length <= 140, "the log gets a slice, not the answer");
+});
+
+test("tracing is silent when MOONMIND_DEBUG is off", async () => {
+  const lines = [];
+  const original = console.log;
+  console.log = (...args) => lines.push(args[0]);
+
+  try {
+    const { graph } = compile();
+    await graph.invoke(turn("hi"), { configurable: { thread_id: "trace-off" } });
+  } finally {
+    console.log = original;
+  }
+
+  assert.deepEqual(
+    lines.filter((line) => String(line).startsWith("agent.")),
+    [],
+    "the tracer costs nothing and says nothing unless it is turned on",
+  );
 });

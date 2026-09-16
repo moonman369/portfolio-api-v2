@@ -12,7 +12,7 @@ const ROUTER_SYSTEM_PROMPT = [
   "Classify the user's latest message into exactly one route:",
   "",
   '- about_me: anything about Ayan himself - skills, projects, experience, education,',
-  "  certifications, achievements, research, hobbies, or his profile generally.",
+  "  certifications, achievements, research, hobbies, resume or his profile generally.",
   "- stats: GitHub or LeetCode numbers only (repos, commits, stars, pull requests,",
   "  problems solved, ranking). Set `which` to github, leetcode, or both.",
   "- stats_and_docs: the message asks for GitHub/LeetCode numbers AND something about",
@@ -32,6 +32,11 @@ const ROUTER_SYSTEM_PROMPT = [
   "- Choose the single best route. Prefer about_me for anything about Ayan that is not",
   "  clearly one of the others.",
   "- Use stats_and_docs only when BOTH needs are genuinely present.",
+  "- If the message names Ayan, or says he/his/him, it is a question ABOUT Ayan: route it",
+  "  to about_me, stats, stats_and_docs or complex. Never tech_web, however much",
+  "  technology it mentions - \"what backend technologies does Ayan work with\" is about_me.",
+  "- complex is only for questions about Ayan. A comparison or trend question that is not",
+  '  about him is tech_web, e.g. "how does RAG compare to fine-tuning".',
   "- `confidence` is how certain you are, from 0 to 1. Be honest: a vague or ambiguous",
   "  message should score low. Do not inflate it.",
   "- `which` must be null unless the route is stats or stats_and_docs.",
@@ -304,6 +309,31 @@ const AGENT_NO_ANSWER = [
   "Rephrasing it, or asking about something more specific, usually helps.",
 ].join("\n");
 
+/**
+ * MoonMind's canned dead-ends — the answers that say "I can't help with this".
+ *
+ * The router is hidden from these deliberately. It classifies from recent history, and
+ * `generate` appends every answer to that history, so without this filter the router
+ * reads its own past refusals as precedent and keeps refusing: two refused asks in one
+ * session was enough to flip "Ayan's resume" from about_me@0.9 to refusal@1.0. Prompt
+ * wording does not fix it — an explicit "earlier refusals are not precedent" rule was
+ * tried and still failed 4/4. See `nodes/router.js`.
+ *
+ * Exact strings, not patterns: these are our own constants, so equality is precise and a
+ * real answer that happens to sound apologetic is never dropped. `buildTruncatedAnswer`
+ * is deliberately absent — it is dynamic, and it reports partial progress rather than a
+ * refusal, so it carries no "we decline this" signal.
+ */
+const CANNED_DEAD_ENDS = Object.freeze(
+  new Set([
+    REFUSAL_ANSWER,
+    ERROR_ANSWER,
+    NOT_IMPLEMENTED_ANSWER,
+    OUT_OF_SCOPE_ANSWER,
+    AGENT_NO_ANSWER,
+  ]),
+);
+
 // User-facing copy for list_capabilities, keyed by route so the answer is generated
 // from the route enum rather than hand-maintained alongside it. Routes deliberately
 // left out of the list: refusal (not a capability) and list_capabilities (self).
@@ -338,6 +368,7 @@ module.exports = {
   REFUSAL_ANSWER,
   ERROR_ANSWER,
   NOT_IMPLEMENTED_ANSWER,
+  CANNED_DEAD_ENDS,
   TECH_WEB_SYSTEM_PROMPT,
   EXCLUDED_TOPICS,
   resolveExcludedTopics,

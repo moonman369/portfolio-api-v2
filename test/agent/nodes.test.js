@@ -20,7 +20,11 @@ const { createRouterNode, LOW_CONFIDENCE_ROUTE } = require("../../src/agent/node
 const { createGenerateNode } = require("../../src/agent/nodes/generate");
 const { refusal, listCapabilities, makeStubNode } = require("../../src/agent/nodes/simple");
 const { ROUTES, recentMessages } = require("../../src/agent/state");
-const { NOT_IMPLEMENTED_ANSWER, REFUSAL_ANSWER } = require("../../src/agent/prompts");
+const {
+  NOT_IMPLEMENTED_ANSWER,
+  REFUSAL_ANSWER,
+  ERROR_ANSWER,
+} = require("../../src/agent/prompts");
 
 /** A model whose withStructuredOutput().invoke() resolves to `output`, or throws. */
 function fakeRouterModel(output, { throws = false } = {}) {
@@ -245,4 +249,74 @@ test("recentMessages keeps the tail and leaves short histories alone", () => {
   assert.deepEqual(recentMessages(messages, 50), messages);
   assert.deepEqual(recentMessages(messages, 0), messages);
   assert.deepEqual(recentMessages(null, 5), []);
+});
+
+// ---------------------------------------------------------------------------
+// Router history hygiene
+// ---------------------------------------------------------------------------
+
+test("the router never sees MoonMind's own canned dead-ends", async () => {
+  // Without this filter the router reads its own refusals as precedent and keeps
+  // refusing: two refused asks in one session turned "Ayan's resume" from about_me@0.9
+  // into refusal@1.0 against the real model, and 1.0 clears the confidence floor, so
+  // nothing downstream catches it. Prompt wording was measured and did not fix it.
+  const model = fakeRouterModel({
+    route: "about_me",
+    confidence: 0.9,
+    which: null,
+    cancelsActiveFlow: false,
+  });
+
+  await createRouterNode({ model })(
+    baseState({
+      messages: [
+        new HumanMessage("give me Ayan's resume"),
+        new AIMessage(REFUSAL_ANSWER),
+        new HumanMessage("his cv please"),
+        new AIMessage(NOT_IMPLEMENTED_ANSWER),
+        new HumanMessage("and this one errored"),
+        new AIMessage(ERROR_ANSWER),
+        new HumanMessage("Ayan's resume"),
+      ],
+    }),
+  );
+
+  const sent = model.seen[0];
+  const contents = sent.map((message) => String(message.content));
+
+  assert.ok(!contents.includes(REFUSAL_ANSWER), "the refusal answer is filtered out");
+  assert.ok(!contents.includes(NOT_IMPLEMENTED_ANSWER), "the stub answer is filtered out");
+  assert.ok(!contents.includes(ERROR_ANSWER), "the error answer is filtered out");
+
+  // Every human turn survives: they are what the router actually classifies against.
+  const humanTurns = sent.filter((message) => message.getType() === "human");
+  assert.deepEqual(humanTurns.map((message) => String(message.content)), [
+    "give me Ayan's resume",
+    "his cv please",
+    "and this one errored",
+    "Ayan's resume",
+  ]);
+});
+
+test("the router still sees real answers, so follow-ups stay resolvable", async () => {
+  const model = fakeRouterModel({
+    route: "about_me",
+    confidence: 0.9,
+    which: null,
+    cancelsActiveFlow: false,
+  });
+  const realAnswer = "Ayan works mostly in Node.js, Java and Spring Boot.";
+
+  await createRouterNode({ model })(
+    baseState({
+      messages: [
+        new HumanMessage("what are his backend skills?"),
+        new AIMessage(realAnswer),
+        new HumanMessage("what about the frontend?"),
+      ],
+    }),
+  );
+
+  const contents = model.seen[0].map((message) => String(message.content));
+  assert.ok(contents.includes(realAnswer), "a genuine answer is context, not contamination");
 });

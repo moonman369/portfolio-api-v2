@@ -71,7 +71,9 @@ function toFeedResponse(run, steps, since) {
     route: run.route,
     answer: run.answer,
     error: run.error,
-    // Ids only: the feed shows what grounded an answer, `/chat` returns the documents.
+    // The same shaping `/chat` applies, from the same function, so a caller can move
+    // between the two endpoints without a second mapping. Empty until the run finishes.
+    documents: toResponseDocuments(run.documents),
     documentIds: run.documentIds ?? [],
     documentCount: run.documentCount ?? 0,
     startedAt: run.startedAt,

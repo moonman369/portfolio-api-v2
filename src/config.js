@@ -144,6 +144,12 @@ const envSchema = z.object({
   // The scope guard: one cheap classification before an agent dispatches any tool.
   // The topic list lives in `agent/prompts.js` (EXCLUDED_TOPICS); this appends to it, so
   // the VM can gain a topic by editing .env instead of waiting for a build.
+  // Debug tracing. `MOONMIND_DEBUG` logs a per-node trace of every run — order, timing
+  // and what each node decided. `MOONMIND_DEBUG_MODELS` additionally turns on LangChain's
+  // own verbosity, which prints every prompt and completion in full; that is enormously
+  // noisy and is kept separate on purpose.
+  MOONMIND_DEBUG: booleanFlag(false),
+  MOONMIND_DEBUG_MODELS: booleanFlag(false),
   MOONMIND_SCOPE_GUARD_ENABLED: booleanFlag(true),
   MOONMIND_EXCLUDED_TOPICS: optionalList,
   MOONMIND_RECURSION_LIMIT: positiveInt.default(25),
@@ -281,6 +287,8 @@ function loadConfig(env) {
       // How many model calls one agent node gets per run. Each tool-calling round is
       // one, so this bounds both cost and latency for `tech_web` and every agent after.
       agentMaxSteps: raw.MOONMIND_AGENT_MAX_STEPS,
+      debug: raw.MOONMIND_DEBUG,
+      debugModels: raw.MOONMIND_DEBUG_MODELS,
       scopeGuardEnabled: raw.MOONMIND_SCOPE_GUARD_ENABLED,
       excludedTopics: raw.MOONMIND_EXCLUDED_TOPICS,
     },

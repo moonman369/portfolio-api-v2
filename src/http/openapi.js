@@ -174,11 +174,13 @@ function buildComponents(maxMessageChars) {
           route: { type: "string", nullable: true, example: "about_me" },
           answer: { type: "string", nullable: true, description: "Null until the run finishes." },
           error: { type: "object", nullable: true, additionalProperties: true },
-          documentIds: {
+          documents: {
             type: "array",
-            items: str(),
-            description: "What grounded the answer. Use /chat for the documents themselves.",
+            description:
+              "The documents that grounded the answer, in exactly the shape /chat returns. Empty until the run finishes.",
+            items: { type: "object", additionalProperties: true },
           },
+          documentIds: { type: "array", items: str(), description: "Their ids, for convenience." },
           documentCount: int(8),
           startedAt: str(),
           finishedAt: { type: "string", nullable: true },

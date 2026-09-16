@@ -1322,3 +1322,141 @@ move and is the clearest candidate yet for the Phase 8 structure audit.
 
 **Env vars.** Two added, total 76: `MOONMIND_SCOPE_GUARD_ENABLED` (default true) and
 `MOONMIND_EXCLUDED_TOPICS` (empty).
+
+### Out-of-band: the run feed returns documents — 2026-09-15
+
+**Reverses a Phase 4 decision, on Ayan's call**, ahead of the frontend cutover work.
+
+Phase 4 stored `documentIds` rather than documents, so the feed would not become a second
+copy of the corpus. That held while `/chat` was the frontend's chat path. It stops holding
+now that the frontend drives chat entirely from `POST /runs` + `GET /runs/:runId`: with ids
+only, either source rendering is lost or the frontend calls both endpoints and **the graph
+runs twice for every question**, doubling model and Tavily cost.
+
+**Changed.** `finishRun` stores `turn.documents`; `toFeedResponse` puts them through
+`toResponseDocuments` — the same function `/chat` uses, so the two payloads cannot drift.
+Verified live: an `about_me` run returns 10 documents with identical keys to `/chat`
+(`id, title, category, tags, content_full, metadata, score, semantic_score,
+retrieval_sources, rrf_score, retrieval_score, boost_score`) and `summary_for_embedding`
+stripped. `documentIds` and `documentCount` stay, for callers that only want the ids.
+
+**Cost accepted.** The runs collection now holds document bodies. It is bounded by
+`MOONMIND_RUN_RETENTION_DAYS` (7) and by the fact that only retrieving routes populate it.
+Worth watching on the Atlas free tier if traffic grows — the row size is roughly the
+`/chat` payload per run.
+
+**Measured run times** (useful for the frontend's polling): `about_me` 7.7s, `tech_web`
+20.1s. The hard cap is `MOONMIND_RUN_TIMEOUT_MS` (120s).
+
+**Also written:** `docs/FRONTEND_INTEGRATION.md` — the API contract and migration brief to
+hand to the frontend repo. It is the backend half of what Phase 8's `CUTOVER.md` will
+cover; Phase 8 should reference it rather than restate it.
+
+### Out-of-band: debug tracing for agent runs — 2026-09-15
+
+**Asked for.** A way to watch the agentic steps while debugging behaviour.
+
+**What already existed.** Good failure logging — `agent.node.failed` with a stack,
+`agent.router.fallback`, `agent.stats.source_unavailable`, `agent.about_me.degraded`,
+`agent.web_search`, `agent.scope_guard.blocked`, `agent.node.truncated`. What was missing
+was the **happy path**: which nodes ran, in what order, how long each took, and what each
+one decided. The run feed captures that, but only into Mongo and only in redacted form.
+
+**Where it went.** `withErrorBoundary` in `graph.js` wraps every node, so instrumenting
+there covers `/chat` (which uses `.invoke()` and produces no feed), the run feed, the eval
+scripts and the tests — from one place, with no node aware of it.
+
+**Two levels, both off by default.**
+- `MOONMIND_DEBUG` — `agent.run.start` / `agent.node.start` / `agent.node.end` /
+  `agent.route` / `agent.run.end`, each with `runId`, `sessionId` and `ms`.
+- `MOONMIND_DEBUG_MODELS` — LangChain's own `verbose`, set in `models.js`: every prompt and
+  completion in full. Kept separate because the volume is on a different scale; one
+  `about_me` turn prints ten documents of context. The intended workflow is
+  `MOONMIND_DEBUG` to find the node, then this to see what it was asked.
+
+**`describeUpdate` vs `summarizeUpdate`.** Deliberately two functions. The feed's
+`summarizeUpdate` (`runs.js`) is a redaction whitelist for a Mongo collection; this one is
+for the server log the operator already sees stack traces in, so it keeps **slot values**,
+**document ids** and a 140-character answer preview — the things that actually separate a
+bad route from a bad retrieval. It is still a whitelist rather than a serializer: an LCEL
+sub-step's output carries the resolved config, API keys included, and a test asserts that
+shape summarizes to `{}`.
+
+**`agent.route` is the high-value line.** It prints the branch taken alongside the
+classification and the sticky `activeFlow` that may have overridden it — the answer to
+"why did this question go there".
+
+**One defect found and fixed while building it.** The first version called `getConfig()`
+unconditionally, which broke `test/agent/graph.test.js` — that file drives `buildGraph`
+with an explicit `topicChangeConfidence` specifically so it needs no environment.
+`debugEnabled()` now tolerates config being absent. A tracer must never be the reason a
+run fails.
+
+**Verified live.** A real `about_me` turn with `MOONMIND_DEBUG=true` traces router (3.2s,
+`route=about_me confidence=0.9`) → `agent.route` → about_me (10 document ids) → generate
+(4.3s, 1058 chars) → `agent.run.end` 16.5s. With the flag off, zero `agent.*` lines — a
+test asserts that too. 337 tests pass (5 new).
+
+**Env vars.** Two added, total 78.
+
+### Out-of-band fix: the router refused from its own history — 2026-09-16
+
+**Reported.** `"Ayan's resume"` came back `route: refusal, confidence: 1` in a real run,
+*after* `resume` had been added to the `about_me` bullet in `ROUTER_SYSTEM_PROMPT`. The
+question was why the prompt edit had not taken.
+
+**It had taken. The prompt was never the lever.** With the edited prompt and no history,
+8 identical calls returned `about_me@0.9` — the edit moved it up from 0.8. The refusal
+came from **session history**:
+
+1. The router classifies from `recentMessages(state.messages, …)`, not from the latest
+   message alone.
+2. `generate` appends every answer to `messages`, including `REFUSAL_ANSWER`.
+3. So the router reads its own past refusals as precedent and refuses again.
+
+Two refused resume-style asks in one session was enough to flip it, reproducing the
+reported trace exactly — `refusal@1.0`. A confidence of 1.0 also clears
+`MOONMIND_ROUTER_MIN_CONFIDENCE`, so the low-confidence floor never catches it, and the
+floor lands on `about_me` anyway rather than `refusal`.
+
+**Measured, because the obvious fix does not work:**
+
+| variant | result over 4 calls |
+|---|---|
+| as-is, poisoned history | 4x `refusal@1.0` |
+| + explicit "earlier refusals are not precedent" rule in the prompt | 4x `refusal@1.0` |
+| canned dead-ends filtered out of the router's history | 4x `about_me@0.9` |
+| both | 4x `about_me@0.9` |
+
+The prompt rule failed 4/4. The contamination is in the input, so the input is what
+changed — this is worth remembering the next time a routing bug looks promptable.
+
+**Fixed.**
+1. `CANNED_DEAD_ENDS` in `prompts.js` — the five answers that say "I can't help with this"
+   (`REFUSAL_ANSWER`, `ERROR_ANSWER`, `NOT_IMPLEMENTED_ANSWER`, `OUT_OF_SCOPE_ANSWER`,
+   `AGENT_NO_ANSWER`). Exact strings, since they are our own constants, so a genuine
+   answer that happens to sound apologetic is never dropped. `buildTruncatedAnswer` is
+   deliberately excluded: it reports partial progress, not a refusal.
+2. `routerHistory()` in `nodes/router.js` filters them out of what the router sees. Real
+   answers stay — they are what lets the router resolve "what about that?".
+3. Two regression tests: the dead-ends are filtered, and a real answer still reaches the
+   router.
+
+**Router eval, finally run — and it is now the regression net it was meant to be.**
+Baseline before this session's changes: **27/29**, with two misses unrelated to the
+resume bug:
+- `about_me` 3/4 — "What backend technologies does Ayan work with?" → `tech_web` (0.80)
+- `tech_web` 2/3 — "How does RAG compare to fine-tuning in 2026?" → `complex` (0.70)
+
+Both were genuinely promptable, and two new Rules fixed them: a question naming Ayan (or
+he/his/him) is never `tech_web` however much technology it mentions, and `complex` is only
+for questions about Ayan. **Re-run: 29/29, every route passing, no regressions.**
+
+This closes Phase 1's open item 2. The eval had never been run; it took ten minutes and
+caught two real defects, which is the argument for running the other four.
+
+**Still open.** `scripts/router-eval.js` contains `require("dotenv").config()`, which
+violates CLAUDE.md's standing "no dotenv" rule and does nothing — it reports
+`injected env (0)` because `--env-file` has already loaded everything. `dotenv` is not in
+`package.json` either, so it resolves only via a transitive install and would break on a
+clean `npm ci`. One line to delete; left alone because it is outside what was asked.

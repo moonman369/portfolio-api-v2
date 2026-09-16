@@ -163,7 +163,7 @@ test("steps come back in order and only after the caller's cursor", async () => 
   assert.deepEqual(await runs.listSteps("r1", { since: 4 }, deps), []);
 });
 
-test("finishRun records the answer and the document ids, never the documents", async () => {
+test("finishRun records the answer and the documents that grounded it", async () => {
   const deps = store();
   await runs.startRun({ runId: "r1", sessionId: "s1", question: "q" }, deps);
 
@@ -186,7 +186,10 @@ test("finishRun records the answer and the document ids, never the documents", a
   assert.equal(run.answer, "He has built several Node services.");
   assert.deepEqual(run.documentIds, ["a", "b"]);
   assert.equal(run.documentCount, 2);
-  assert.ok(!JSON.stringify(run).includes("secret"), "document bodies must not be stored");
+  // Stored on purpose since 2026-09-15, reversing the Phase 4 decision: the frontend
+  // drives chat entirely from the feed, and the alternative was running the graph twice.
+  assert.equal(run.documents.length, 2);
+  assert.equal(run.documents[0].content_full, "secret");
   assert.ok(run.finishedAt instanceof Date);
 });
 

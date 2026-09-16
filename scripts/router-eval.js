@@ -18,6 +18,7 @@ const { createRouterNode } = require("../src/agent/nodes/router");
 const { ROUTES } = require("../src/agent/state");
 const { getConfig } = require("../src/config");
 const { HumanMessage } = require("@langchain/core/messages");
+require("dotenv").config()
 
 // At least three per route, phrased the way a portfolio visitor actually types.
 const LABELLED_PROMPTS = Object.freeze({

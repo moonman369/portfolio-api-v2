@@ -10,7 +10,7 @@ const { START } = require("@langchain/langgraph");
 const { MongoDBSaver } = require("@langchain/langgraph-checkpoint-mongodb");
 const { getConfig } = require("../config");
 const { getClient } = require("../db");
-const { buildGraph } = require("./graph");
+const { buildGraph, debug } = require("./graph");
 const { ROUTES, PER_TURN_RESET } = require("./state");
 const runs = require("./runs");
 const { createRouterNode } = require("./nodes/router");
@@ -133,8 +133,20 @@ async function runTurn({ sessionId, message }, deps = {}) {
   const graph = deps.graph ?? (await getCompiledGraph());
   const runId = crypto.randomUUID();
   const { input, config } = buildInvocation({ sessionId, message, runId });
+  const startedAt = Date.now();
 
-  return toTurn({ sessionId, runId, state: await graph.invoke(input, config) });
+  debug("agent.run.start", { runId, sessionId, via: "chat", question: message });
+  const turn = toTurn({ sessionId, runId, state: await graph.invoke(input, config) });
+  debug("agent.run.end", {
+    runId,
+    sessionId,
+    ms: Date.now() - startedAt,
+    route: turn.route,
+    documents: turn.documents.length,
+    failed: Boolean(turn.error),
+  });
+
+  return turn;
 }
 
 // ---------------------------------------------------------------------------
@@ -210,6 +222,9 @@ async function* streamTurn({ sessionId, message, runId }, deps = {}) {
   const graph = deps.graph ?? (await getCompiledGraph());
   const { input, config } = buildInvocation({ sessionId, message, runId });
 
+  const startedAt = Date.now();
+  debug("agent.run.start", { runId, sessionId, via: "runs", question: message });
+
   let seq = 0;
   let finalState = null;
   // A node's boundary must appear exactly once per superstep. Nothing stops a node from
@@ -273,7 +288,18 @@ async function* streamTurn({ sessionId, message, runId }, deps = {}) {
     }
   }
 
-  return toTurn({ sessionId, runId, state: finalState });
+  const turn = toTurn({ sessionId, runId, state: finalState });
+  debug("agent.run.end", {
+    runId,
+    sessionId,
+    ms: Date.now() - startedAt,
+    steps: seq,
+    route: turn.route,
+    documents: turn.documents.length,
+    failed: Boolean(turn.error),
+  });
+
+  return turn;
 }
 
 /** Drain `streamTurn` into the store. Resolves with the turn, or null; never rejects. */
