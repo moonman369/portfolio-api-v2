@@ -83,28 +83,37 @@ function createStatsNode(deps = {}) {
 }
 
 /**
- * The `stats_and_docs` branch: the mixed "my github stats and my projects" query the
- * old regex router handled and the LLD's taxonomy has no slot for.
+ * The `stats` branch, including the mixed "my github stats and my projects" query.
  *
- * It composes the two real nodes rather than reimplementing either. Note what it keeps:
- * `statsPayload` from one and `documents` from the other, and deliberately NOT
+ * Phase 7 collapsed the old `stats_and_docs` route into `slots.withDocuments` — the same
+ * shape `action` uses for book/mail. A pure numbers question runs the stats half alone;
+ * a mixed one composes both real nodes rather than reimplementing either. Note what it
+ * keeps: `statsPayload` from one and `documents` from the other, and deliberately NOT
  * `finalAnswer` — a mixed question is answered once, by `generate`, from both halves.
+ *
+ * The label is now narrower than what this node does. That was the deliberate trade at
+ * the Phase 7 gate: a slot rather than an eighth label.
  */
-function createStatsAndDocsNode({ statsNode, aboutMeNode }) {
+function createStatsAndDocsNode({ statsNode, knowledgeNode }) {
   return async function statsAndDocs(state, config) {
+    // Numbers only: skip retrieval entirely rather than paying for it and discarding it.
+    if (state.slots?.withDocuments !== true) {
+      return statsNode(state, config);
+    }
+
     const [statsResult, docsResult] = await Promise.allSettled([
       statsNode(state, config),
-      aboutMeNode(state, config),
+      knowledgeNode(state, config),
     ]);
 
     if (statsResult.status === "rejected") {
-      console.warn("agent.stats_and_docs.stats_failed", {
+      console.warn("agent.stats.stats_failed", {
         sessionId: state.sessionId,
         message: statsResult.reason?.message,
       });
     }
     if (docsResult.status === "rejected") {
-      console.warn("agent.stats_and_docs.documents_failed", {
+      console.warn("agent.stats.documents_failed", {
         sessionId: state.sessionId,
         message: docsResult.reason?.message,
       });
@@ -113,6 +122,7 @@ function createStatsAndDocsNode({ statsNode, aboutMeNode }) {
     return {
       statsPayload: statsResult.status === "fulfilled" ? statsResult.value?.statsPayload ?? null : null,
       documents: docsResult.status === "fulfilled" ? docsResult.value?.documents ?? [] : [],
+      retrievalDebug: docsResult.status === "fulfilled" ? docsResult.value?.retrievalDebug ?? null : null,
     };
   };
 }

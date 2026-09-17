@@ -57,7 +57,7 @@ const store = () => {
 
 test("a node's update is summarized as counts and enums, never as content", () => {
   const summary = runs.summarizeUpdate({
-    route: "about_me",
+    route: "knowledge",
     routeConfidence: 0.912,
     documents: [
       { id: "a", content_full: "Ayan's private salary history" },
@@ -67,7 +67,7 @@ test("a node's update is summarized as counts and enums, never as content", () =
     finalAnswer: "He has built several Node services.",
   });
 
-  assert.equal(summary, "route=about_me confidence=0.91 candidates=4 documents=2 answer=35 chars");
+  assert.equal(summary, "route=knowledge confidence=0.91 candidates=4 documents=2 answer=35 chars");
   assert.ok(!summary.includes("salary"), "document content must never reach a step");
   assert.ok(!summary.includes("Node services"), "answer text must never reach a step");
 });
@@ -154,7 +154,7 @@ test("steps come back in order and only after the caller's cursor", async () => 
   await runs.startRun({ runId: "r1", sessionId: "s1", question: "q" }, deps);
 
   for (const seq of [1, 2, 3, 4]) {
-    await runs.recordStep({ runId: "r1", seq, node: "about_me", type: "start", summary: "" }, deps);
+    await runs.recordStep({ runId: "r1", seq, node: "knowledge", type: "start", summary: "" }, deps);
   }
   await runs.recordStep({ runId: "other", seq: 1, node: "stats", type: "start", summary: "" }, deps);
 
@@ -163,7 +163,7 @@ test("steps come back in order and only after the caller's cursor", async () => 
   assert.deepEqual(await runs.listSteps("r1", { since: 4 }, deps), []);
 });
 
-test("finishRun records the answer and the document ids, never the documents", async () => {
+test("finishRun records the answer and the documents that grounded it", async () => {
   const deps = store();
   await runs.startRun({ runId: "r1", sessionId: "s1", question: "q" }, deps);
 
@@ -171,7 +171,7 @@ test("finishRun records the answer and the document ids, never the documents", a
     {
       runId: "r1",
       turn: {
-        route: "about_me",
+        route: "knowledge",
         answer: "He has built several Node services.",
         documents: [{ id: "a", content_full: "secret" }, { id: "b" }],
         error: null,
@@ -182,11 +182,14 @@ test("finishRun records the answer and the document ids, never the documents", a
 
   const run = await runs.getRun("r1", deps);
   assert.equal(run.status, "done");
-  assert.equal(run.route, "about_me");
+  assert.equal(run.route, "knowledge");
   assert.equal(run.answer, "He has built several Node services.");
   assert.deepEqual(run.documentIds, ["a", "b"]);
   assert.equal(run.documentCount, 2);
-  assert.ok(!JSON.stringify(run).includes("secret"), "document bodies must not be stored");
+  // Stored on purpose since 2026-09-15, reversing the Phase 4 decision: the frontend
+  // drives chat entirely from the feed, and the alternative was running the graph twice.
+  assert.equal(run.documents.length, 2);
+  assert.equal(run.documents[0].content_full, "secret");
   assert.ok(run.finishedAt instanceof Date);
 });
 
@@ -198,10 +201,10 @@ test("a turn carrying an error finishes as failed but keeps its graceful answer"
     {
       runId: "r1",
       turn: {
-        route: "about_me",
+        route: "knowledge",
         answer: "Something went wrong on my side.",
         documents: [],
-        error: { node: "about_me", message: "boom" },
+        error: { node: "knowledge", message: "boom" },
       },
     },
     deps,
@@ -209,7 +212,7 @@ test("a turn carrying an error finishes as failed but keeps its graceful answer"
 
   const run = await runs.getRun("r1", deps);
   assert.equal(run.status, "failed");
-  assert.deepEqual(run.error, { node: "about_me", message: "boom" });
+  assert.deepEqual(run.error, { node: "knowledge", message: "boom" });
   assert.equal(run.answer, "Something went wrong on my side.");
 });
 

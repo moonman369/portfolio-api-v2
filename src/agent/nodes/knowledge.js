@@ -1,15 +1,21 @@
 "use strict";
 
-// The about_me branch: retrieve the documents that ground the answer, and nothing else.
+// The knowledge branch: retrieve the documents that ground the answer, and nothing else.
 // `generate` turns them into prose.
+//
+// Phase 7 renamed this from `about_me` and widened what reaches it — the questions that
+// used to be `complex` ("how has Ayan upskilled in AI since 2023") now land here too. The
+// pipeline is unchanged: they are answered from retrieval alone, which is enough for
+// trend questions because the corpus carries date metadata. Phase 9 adds the one-per-turn
+// escalation to `agent` for the ones that genuinely need a tool.
 //
 // The whole pipeline — decompose -> per-sub-query (plan -> semantic/keyword/metadata
 // arms -> RRF) -> union -> rank -> rerank — lives in `retrieval/`, where the eval
-// scripts and Phase 7's tools reach it too. This node's job is to supply the models,
+// scripts and Phase 8's tools reach it too. This node's job is to supply the models,
 // call it, and map the result onto state.
 //
 // It is composed as an LCEL RunnableSequence rather than one opaque call so Phase 4's
-// `.streamEvents()` feed shows named steps instead of a single "about_me" blob. The node
+// `.streamEvents()` feed shows named steps instead of a single "knowledge" blob. The node
 // itself stays a plain async function, per ARCHITECTURE.md §4.
 
 const { RunnableLambda, RunnableSequence } = require("@langchain/core/runnables");
@@ -49,7 +55,7 @@ function resolveModels(retrieval, overrides = {}) {
 /**
  * @param {object} [deps] Injected for tests: `retrieve`, `models`, `config`.
  */
-function createAboutMeNode(deps = {}) {
+function createKnowledgeNode(deps = {}) {
   const run = deps.retrieve ?? retrieve;
 
   const chain = RunnableSequence.from(
@@ -61,32 +67,32 @@ function createAboutMeNode(deps = {}) {
           models: resolveModels(config.retrieval, deps),
           config,
         };
-      }).withConfig({ runName: "about_me.prepare" }),
+      }).withConfig({ runName: "knowledge.prepare" }),
 
       RunnableLambda.from(async function retrieveDocuments({ query, models, config }) {
         if (!query) {
           return { documents: [], failedArms: [] };
         }
-        return run(query, { models, config });
-      }).withConfig({ runName: "about_me.retrieve" }),
+        return run(query, { models, config, debug: config.retrieval.debugEnabled });
+      }).withConfig({ runName: "knowledge.retrieve" }),
 
-      // Only `documents`: the answer belongs to `generate`, which is what lets
-      // stats_and_docs reuse this node alongside the stats one.
+      // `documents` plus the optional debug trace: the answer belongs to `generate`,
+      // which is what lets the stats node reuse this one for a mixed question.
       RunnableLambda.from(function toState(result) {
         if (result.failedArms?.length) {
-          console.warn("agent.about_me.degraded", { failedArms: result.failedArms });
+          console.warn("agent.knowledge.degraded", { failedArms: result.failedArms });
         }
-        return { documents: result.documents ?? [] };
-      }).withConfig({ runName: "about_me.to_state" }),
+        return { documents: result.documents ?? [], retrievalDebug: result.debug ?? null };
+      }).withConfig({ runName: "knowledge.to_state" }),
     ],
-    // Deliberately unnamed. A runnable named exactly `about_me` is indistinguishable
+    // Deliberately unnamed. A runnable named exactly `knowledge` is indistinguishable
     // from the graph node of that name in `.streamEvents()`, which made the feed report
     // every start and end for this node twice. The three steps above carry the names.
   );
 
-  return async function aboutMe(state, config) {
+  return async function knowledge(state, config) {
     return chain.invoke(state, config);
   };
 }
 
-module.exports = { createAboutMeNode, resolveQuery };
+module.exports = { createKnowledgeNode, resolveQuery };

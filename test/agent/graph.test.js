@@ -7,7 +7,14 @@ const assert = require("node:assert/strict");
 const { MemorySaver } = require("@langchain/langgraph");
 const { HumanMessage } = require("@langchain/core/messages");
 
-const { buildGraph, routeFromState, ROUTE_TO_NODE } = require("../../src/agent/graph");
+const {
+  buildGraph,
+  routeFromState,
+  describeUpdate,
+  ROUTE_TO_NODE,
+  LEGACY_ROUTE_MAP,
+  LEGACY_NODES,
+} = require("../../src/agent/graph");
 const { ROUTES, PER_TURN_RESET } = require("../../src/agent/state");
 const { ERROR_ANSWER } = require("../../src/agent/prompts");
 
@@ -80,8 +87,8 @@ test("every route in the enum has a node in ROUTE_TO_NODE", () => {
 
 test("a throwing branch node yields a graceful answer, not a failed run", async () => {
   const { graph, visited } = compile({
-    router: async () => ({ route: "about_me", routeConfidence: 1 }),
-    about_me: async () => {
+    router: async () => ({ route: "knowledge", routeConfidence: 1 }),
+    knowledge: async () => {
       throw new Error("retrieval exploded");
     },
   });
@@ -89,7 +96,7 @@ test("a throwing branch node yields a graceful answer, not a failed run", async 
   const result = await graph.invoke(turn("tell me about ayan"), config("s-err"));
 
   assert.equal(result.finalAnswer, ERROR_ANSWER);
-  assert.equal(result.error.node, "about_me");
+  assert.equal(result.error.node, "knowledge");
   assert.match(result.error.message, /retrieval exploded/);
   assert.deepEqual(visited, ["generate"], "flow still reaches generate");
 });
@@ -147,6 +154,37 @@ test("per-turn fields do not leak across two turns on one sessionId", async () =
   assert.equal(second.error, null);
 });
 
+test("previousRoute survives the reset that clears route", async () => {
+  // The whole point of the field: `route` is cleared before the router runs, so the only
+  // way a follow-up can know what the last exchange was about is if this one persists.
+  const checkpointer = new MemorySaver();
+  const seenPreviousRoutes = [];
+  let currentRoute = "knowledge";
+
+  const { nodes } = fakeNodes({
+    router: async (state) => {
+      seenPreviousRoutes.push(state.previousRoute ?? null);
+      return { route: currentRoute, routeConfidence: 1 };
+    },
+    knowledge: async () => ({ documents: [] }),
+    generate: async (state) => ({ previousRoute: state.route ?? null, finalAnswer: "answered" }),
+  });
+  const graph = buildGraph({ nodes, checkpointer, topicChangeConfidence: TOPIC_CHANGE_CONFIDENCE });
+
+  const first = await graph.invoke(turn("Ayan's resume"), config("carries"));
+  assert.equal(first.route, "knowledge");
+  assert.equal(first.previousRoute, "knowledge");
+
+  const second = await graph.invoke(turn("no, just the link"), config("carries"));
+
+  assert.deepEqual(
+    seenPreviousRoutes,
+    [null, "knowledge"],
+    "the second turn's router sees what the first turn answered",
+  );
+  assert.equal(second.previousRoute, "knowledge");
+});
+
 test("messages persist across turns in the checkpointer", async () => {
   const checkpointer = new MemorySaver();
   const { nodes } = fakeNodes({ router: async () => ({ route: "refusal", routeConfidence: 1 }) });
@@ -179,19 +217,70 @@ test("routeFromState falls back to refusal for an unknown or missing route", () 
   assert.equal(routeFromState({}, routing), "refusal");
 });
 
-test("an active flow keeps a weakly-classified reply inside the flow", () => {
-  // "Tuesday 3pm" mid-booking: classified as about_me with low confidence.
+// ---------------------------------------------------------------------------
+// Legacy routes in checkpointed threads
+// ---------------------------------------------------------------------------
+
+test("a thread checkpointed under the old taxonomy lands on the right node", () => {
+  // Not hypothetical: 20 live threads were carrying pre-Phase-7 values when this landed.
+  // Without the map every one of them would fall to `refusal` on its next turn.
+  const expected = {
+    about_me: "knowledge",
+    complex: "knowledge",
+    stats_and_docs: "stats",
+    book_catchup: "action",
+    send_mail: "action",
+    list_capabilities: "capabilities",
+    // Deliberately itself: the node still works, and `agent` is a stub until Phase 8.
+    tech_web: "tech_web",
+  };
+
+  Object.entries(expected).forEach(([legacy, node]) => {
+    assert.equal(routeFromState({ route: legacy }, routing), node, `${legacy} -> ${node}`);
+  });
+});
+
+test("every legacy route maps somewhere real, and current names pass through", () => {
+  Object.entries(LEGACY_ROUTE_MAP).forEach(([legacy, target]) => {
+    assert.ok(
+      ROUTES.includes(target) || LEGACY_NODES.includes(target),
+      `${legacy} maps to ${target}, which is neither a route nor a kept node`,
+    );
+    assert.ok(!ROUTES.includes(legacy), `${legacy} is not supposed to be a current route`);
+  });
+
+  ROUTES.forEach((route) => {
+    assert.equal(routeFromState({ route }, routing), route, "a current route is untouched");
+  });
+});
+
+test("a legacy activeFlow still holds a weak reply inside its flow", () => {
+  // A thread parked mid-booking under the old name keeps its stickiness.
   const node = routeFromState(
-    { activeFlow: "book_catchup", route: "about_me", routeConfidence: 0.3, slots: {} },
+    { activeFlow: "book_catchup", route: "knowledge", routeConfidence: 0.3, slots: {} },
     routing,
   );
-  assert.equal(node, "book_catchup");
+
+  assert.equal(node, "action");
+});
+
+test("an unmapped legacy name still falls to refusal", () => {
+  assert.equal(routeFromState({ route: "some_route_we_never_had" }, routing), "refusal");
+});
+
+test("an active flow keeps a weakly-classified reply inside the flow", () => {
+  // "Tuesday 3pm" mid-booking: classified as knowledge with low confidence.
+  const node = routeFromState(
+    { activeFlow: "action", route: "knowledge", routeConfidence: 0.3, slots: {} },
+    routing,
+  );
+  assert.equal(node, "action");
 });
 
 test("an explicit cancel breaks out of an active flow", () => {
   const node = routeFromState(
     {
-      activeFlow: "book_catchup",
+      activeFlow: "action",
       route: "refusal",
       routeConfidence: 0.2,
       slots: { cancelsActiveFlow: true },
@@ -203,7 +292,7 @@ test("an explicit cancel breaks out of an active flow", () => {
 
 test("a confident topic change breaks out of an active flow", () => {
   const node = routeFromState(
-    { activeFlow: "book_catchup", route: "stats", routeConfidence: 0.95, slots: {} },
+    { activeFlow: "action", route: "stats", routeConfidence: 0.95, slots: {} },
     routing,
   );
   assert.equal(node, "stats");
@@ -211,10 +300,10 @@ test("a confident topic change breaks out of an active flow", () => {
 
 test("a confident classification into the same flow stays in the flow", () => {
   const node = routeFromState(
-    { activeFlow: "book_catchup", route: "book_catchup", routeConfidence: 0.99, slots: {} },
+    { activeFlow: "action", route: "action", routeConfidence: 0.99, slots: {} },
     routing,
   );
-  assert.equal(node, "book_catchup");
+  assert.equal(node, "action");
 });
 
 test("an unknown activeFlow does not trap the turn", () => {
@@ -231,4 +320,74 @@ test("a router failure skips the branch so its answer is not overwritten", () =>
     routing,
   );
   assert.equal(node, "generate");
+});
+
+// ---------------------------------------------------------------------------
+// Debug tracing
+// ---------------------------------------------------------------------------
+
+test("describeUpdate reports what a node decided, richly enough to debug it", () => {
+  const described = describeUpdate({
+    route: "knowledge",
+    routeConfidence: 0.9,
+    slots: { which: "github" },
+    documents: [{ id: "a" }, { id: "b" }],
+    finalAnswer: "Ayan works mostly in Java.",
+  });
+
+  assert.equal(described.route, "knowledge");
+  assert.equal(described.confidence, 0.9);
+  // Unlike the persisted feed's summary, slot VALUES are kept: the server log is where
+  // you find out the router filled `which` with the wrong source.
+  assert.deepEqual(described.slots, { which: "github" });
+  assert.equal(described.documents, 2);
+  assert.deepEqual(described.documentIds, ["a", "b"]);
+  assert.equal(described.answerChars, 26);
+  assert.match(described.answerPreview, /^Ayan works/);
+});
+
+test("describeUpdate is a whitelist, so an unexpected shape cannot leak a secret", () => {
+  // `about_me.prepare` genuinely returns the resolved config. The boundary only wraps
+  // nodes, but a blind serializer here would still be one refactor away from printing
+  // every API key the process holds.
+  const described = describeUpdate({
+    query: "what has Ayan built",
+    models: { response: "gpt-4o-mini" },
+    config: { openai: { apiKey: "sk-super-secret" }, tavily: { apiKey: "tvly-secret" } },
+  });
+
+  assert.deepEqual(described, {});
+  assert.ok(!JSON.stringify(described).includes("secret"));
+});
+
+test("describeUpdate tolerates an absent or malformed update", () => {
+  assert.deepEqual(describeUpdate(null), {});
+  assert.deepEqual(describeUpdate("nonsense"), {});
+  assert.deepEqual(describeUpdate({}), {});
+});
+
+test("the answer preview is bounded", () => {
+  const described = describeUpdate({ finalAnswer: "x".repeat(5000) });
+
+  assert.equal(described.answerChars, 5000);
+  assert.ok(described.answerPreview.length <= 140, "the log gets a slice, not the answer");
+});
+
+test("tracing is silent when MOONMIND_DEBUG is off", async () => {
+  const lines = [];
+  const original = console.log;
+  console.log = (...args) => lines.push(args[0]);
+
+  try {
+    const { graph } = compile();
+    await graph.invoke(turn("hi"), { configurable: { thread_id: "trace-off" } });
+  } finally {
+    console.log = original;
+  }
+
+  assert.deepEqual(
+    lines.filter((line) => String(line).startsWith("agent.")),
+    [],
+    "the tracer costs nothing and says nothing unless it is turned on",
+  );
 });

@@ -170,51 +170,70 @@ test("the stats node writes statsPayload and nothing else", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// stats_and_docs composition
+// The mixed question: stats + documents, behind slots.withDocuments
 // ---------------------------------------------------------------------------
 
-test("stats_and_docs keeps statsPayload and documents, and drops finalAnswer", async () => {
+test("a pure numbers question skips retrieval entirely", async () => {
+  // The slot is what separates the two shapes now that `stats_and_docs` is gone. Without
+  // it, every stats question would pay for a retrieval it then discards.
+  let retrieved = false;
   const node = createStatsAndDocsNode({
-    statsNode: async () => ({ statsPayload: { github: GITHUB_STATS }, finalAnswer: "stats only" }),
-    aboutMeNode: async () => ({ documents: [{ id: "doc-1" }], finalAnswer: "docs only" }),
+    statsNode: async () => ({ statsPayload: { github: GITHUB_STATS } }),
+    knowledgeNode: async () => {
+      retrieved = true;
+      return { documents: [{ id: "doc-1" }] };
+    },
   });
 
-  const result = await node({ sessionId: "s1" });
+  const result = await node({ sessionId: "s1", slots: { which: "github" } });
+
+  assert.equal(retrieved, false, "the knowledge half must not run");
+  assert.deepEqual(result.statsPayload, { github: GITHUB_STATS });
+  assert.equal(result.documents, undefined);
+});
+
+test("a mixed stats question keeps statsPayload and documents, and drops finalAnswer", async () => {
+  const node = createStatsAndDocsNode({
+    statsNode: async () => ({ statsPayload: { github: GITHUB_STATS }, finalAnswer: "stats only" }),
+    knowledgeNode: async () => ({ documents: [{ id: "doc-1" }], finalAnswer: "docs only" }),
+  });
+
+  const result = await node({ sessionId: "s1", slots: { withDocuments: true } });
 
   assert.deepEqual(result.statsPayload, { github: GITHUB_STATS });
   assert.deepEqual(result.documents, [{ id: "doc-1" }]);
   assert.equal(result.finalAnswer, undefined, "a mixed question is answered once, by generate");
 });
 
-test("stats_and_docs survives the documents half failing", async () => {
+test("a mixed stats question survives the documents half failing", async () => {
   const node = createStatsAndDocsNode({
     statsNode: async () => ({ statsPayload: { github: GITHUB_STATS } }),
-    aboutMeNode: async () => {
+    knowledgeNode: async () => {
       throw new Error("retrieval down");
     },
   });
 
-  const result = await node({ sessionId: "s1" });
+  const result = await node({ sessionId: "s1", slots: { withDocuments: true } });
 
   assert.deepEqual(result.statsPayload, { github: GITHUB_STATS });
   assert.deepEqual(result.documents, []);
 });
 
-test("stats_and_docs survives the stats half failing", async () => {
+test("a mixed stats question survives the stats half failing", async () => {
   const node = createStatsAndDocsNode({
     statsNode: async () => {
       throw new Error("stats down");
     },
-    aboutMeNode: async () => ({ documents: [{ id: "doc-1" }] }),
+    knowledgeNode: async () => ({ documents: [{ id: "doc-1" }] }),
   });
 
-  const result = await node({ sessionId: "s1" });
+  const result = await node({ sessionId: "s1", slots: { withDocuments: true } });
 
   assert.equal(result.statsPayload, null);
   assert.deepEqual(result.documents, [{ id: "doc-1" }]);
 });
 
-test("stats_and_docs runs both halves concurrently", async () => {
+test("a mixed stats question runs both halves concurrently", async () => {
   const order = [];
   const node = createStatsAndDocsNode({
     statsNode: async () => {
@@ -223,13 +242,13 @@ test("stats_and_docs runs both halves concurrently", async () => {
       order.push("stats-end");
       return { statsPayload: {} };
     },
-    aboutMeNode: async () => {
+    knowledgeNode: async () => {
       order.push("docs-start");
       return { documents: [] };
     },
   });
 
-  await node({ sessionId: "s1" });
+  await node({ sessionId: "s1", slots: { withDocuments: true } });
 
   assert.deepEqual(order, ["stats-start", "docs-start", "stats-end"]);
 });

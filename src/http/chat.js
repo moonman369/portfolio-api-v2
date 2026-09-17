@@ -71,7 +71,9 @@ function toFeedResponse(run, steps, since) {
     route: run.route,
     answer: run.answer,
     error: run.error,
-    // Ids only: the feed shows what grounded an answer, `/chat` returns the documents.
+    // The same shaping `/chat` applies, from the same function, so a caller can move
+    // between the two endpoints without a second mapping. Empty until the run finishes.
+    documents: toResponseDocuments(run.documents),
     documentIds: run.documentIds ?? [],
     documentCount: run.documentCount ?? 0,
     startedAt: run.startedAt,
@@ -83,7 +85,7 @@ function toFeedResponse(run, steps, since) {
 }
 
 function createChatRouter() {
-  const { moonmind } = getConfig();
+  const { moonmind, retrieval } = getConfig();
   const bodySchema = buildBodySchema(moonmind.maxMessageChars);
 
   const router = express.Router();
@@ -113,6 +115,9 @@ function createChatRouter() {
         route: turn.route,
         answer: turn.answer,
         documents: toResponseDocuments(turn.documents),
+        // Extra field, gated on MOONMIND_RETRIEVAL_DEBUG, never part of the normal
+        // response shape. Ids and titles only — see retrieval/index.js.
+        ...(retrieval.debugEnabled ? { retrievalDebug: turn.retrievalDebug } : {}),
       },
     });
   });

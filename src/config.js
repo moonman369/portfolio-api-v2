@@ -139,11 +139,29 @@ const envSchema = z.object({
   // How many recent messages are replayed to a model. `summary` covers the rest
   // once history outgrows this (populated from Phase 3b).
   MOONMIND_HISTORY_MAX_MESSAGES: positiveInt.default(20),
+  // How many of those the ROUTER sees, compacted into a context block. Narrower than the
+  // full cap on purpose: the router needs the last exchange or two to resolve "just the
+  // link", and more than that starts drowning the message it is supposed to classify.
+  // Capped by MOONMIND_HISTORY_MAX_MESSAGES at use, so this can only ever narrow.
+  MOONMIND_ROUTER_HISTORY_MESSAGES: positiveInt.default(6),
   MOONMIND_RUN_TIMEOUT_MS: positiveInt.default(120_000),
-  MOONMIND_AGENT_MAX_STEPS: positiveInt.max(20).default(4),
+  // Raised from 4 in Phase 8: the agent went from one tool to four, and a question like
+  // "backend skills 2023 vs now" legitimately spends a call resolving the dates and one
+  // per search before the call that writes the answer. Four truncated those.
+  MOONMIND_AGENT_MAX_STEPS: positiveInt.max(20).default(6),
+  // IANA zone for `resolve_time`. "Last year" is a different range either side of a date
+  // line, and the visitor's question is about Ayan's timeline, so this is his zone rather
+  // than the server's — a container in UTC must not shift what "this year" means.
+  MOONMIND_TIMEZONE: nonEmpty.default("Asia/Kolkata"),
   // The scope guard: one cheap classification before an agent dispatches any tool.
   // The topic list lives in `agent/prompts.js` (EXCLUDED_TOPICS); this appends to it, so
   // the VM can gain a topic by editing .env instead of waiting for a build.
+  // Debug tracing. `MOONMIND_DEBUG` logs a per-node trace of every run — order, timing
+  // and what each node decided. `MOONMIND_DEBUG_MODELS` additionally turns on LangChain's
+  // own verbosity, which prints every prompt and completion in full; that is enormously
+  // noisy and is kept separate on purpose.
+  MOONMIND_DEBUG: booleanFlag(false),
+  MOONMIND_DEBUG_MODELS: booleanFlag(false),
   MOONMIND_SCOPE_GUARD_ENABLED: booleanFlag(true),
   MOONMIND_EXCLUDED_TOPICS: optionalList,
   MOONMIND_RECURSION_LIMIT: positiveInt.default(25),
@@ -181,6 +199,11 @@ const envSchema = z.object({
   // this stays off by default to keep retrieval behaviour comparable. Note the
   // collection has no text index: enabling it means a regex collection scan.
   MOONMIND_KEYWORD_ENABLED: booleanFlag(false),
+  // Per-stage retrieval trace (ids/titles only, never full documents) on `POST /chat`'s
+  // response, behind the same password header the route already requires. Off by
+  // default — this is a measurement tool (Phase 6), not a response field a frontend
+  // should depend on.
+  MOONMIND_RETRIEVAL_DEBUG: booleanFlag(false),
 
   // ---- Document ingestion -------------------------------------------------
   MOONMIND_SUMMARY_MIN_SENTENCES: positiveInt.default(3),
@@ -276,11 +299,15 @@ function loadConfig(env) {
       topicChangeConfidence: raw.MOONMIND_TOPIC_CHANGE_CONFIDENCE,
       maxMessageChars: raw.MOONMIND_MAX_MESSAGE_CHARS,
       historyMaxMessages: raw.MOONMIND_HISTORY_MAX_MESSAGES,
+      routerHistoryMessages: raw.MOONMIND_ROUTER_HISTORY_MESSAGES,
       runTimeoutMs: raw.MOONMIND_RUN_TIMEOUT_MS,
       recursionLimit: raw.MOONMIND_RECURSION_LIMIT,
       // How many model calls one agent node gets per run. Each tool-calling round is
       // one, so this bounds both cost and latency for `tech_web` and every agent after.
       agentMaxSteps: raw.MOONMIND_AGENT_MAX_STEPS,
+      timezone: raw.MOONMIND_TIMEZONE,
+      debug: raw.MOONMIND_DEBUG,
+      debugModels: raw.MOONMIND_DEBUG_MODELS,
       scopeGuardEnabled: raw.MOONMIND_SCOPE_GUARD_ENABLED,
       excludedTopics: raw.MOONMIND_EXCLUDED_TOPICS,
     },
@@ -320,6 +347,7 @@ function loadConfig(env) {
       decomposeEnabled: raw.MOONMIND_DECOMPOSE_ENABLED,
       decomposeMaxSubqueries: raw.MOONMIND_DECOMPOSE_MAX_SUBQUERIES,
       keywordEnabled: raw.MOONMIND_KEYWORD_ENABLED,
+      debugEnabled: raw.MOONMIND_RETRIEVAL_DEBUG,
     },
     documents: {
       summaryMinSentences: raw.MOONMIND_SUMMARY_MIN_SENTENCES,

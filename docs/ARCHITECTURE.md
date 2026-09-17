@@ -39,7 +39,7 @@ src/
     models.js            # getModel(role)
     prompts.js           # every system prompt
     tools.js             # every tool + TOOLSETS map
-    nodes/               # router.js, simple.js, stats.js, about-me.js, agents.js, generate.js
+    nodes/               # router.js, simple.js, stats.js, knowledge.js, agents.js, generate.js
 public/                  # run-viewer.html — the only static asset (see below)
 scripts/                 # parity-check, evals, oauth, one-off migrations
 test/                    # node:test, mirrors src/
@@ -144,9 +144,9 @@ Rules that keep it that way:
   only the keys it changes. No classes, no `BaseNode`, no lifecycle hooks.
 - **`routeFromState` is a pure function** over a static `ROUTE_TO_NODE` map. An unknown or
   missing route falls to `refusal`. No conditionals scattered across nodes.
-- **All four agentic nodes come from one factory**, `makeAgentNode({ name, toolset, prompt,
-  maxSteps })` (built in Phase 5, reused unchanged in 6b and 7). The agent runs on its own
-  message list seeded from recent history and writes back **only its final answer and
+- **The single `agent` node comes from the factory built in Phase 5**,
+  `makeAgentNode({ name, toolset, prompt, maxSteps })`, reused unchanged. It runs on its
+  own message list seeded from recent history and writes back **only its final answer and
   sources** — never its internal tool chatter into `messages`.
 - **`TOOLSETS` in `tools.js` is the single auditable map** of which agent gets which tools.
   One place to read to answer "can this agent send email?".
@@ -156,12 +156,60 @@ Rules that keep it that way:
 - **`runTurn({ sessionId, message })` is the single entry point** for HTTP, the run feed,
   and the eval scripts. If something needs to run the graph, it calls `runTurn`.
 
-Routes (LLD §2): `about_me`, `stats`, `tech_web`, `complex`, `refusal`, `book_catchup`,
-`send_mail`, `list_capabilities`.
+**Route taxonomy (supersedes LLD §2 — see PROGRESS.md Deviations for why):**
 
-State fields (LLD §3 plus three additions): `sessionId`, `rawQuery`, `messages`, `route`,
-`routeConfidence`, `slots`, `documents`, `statsPayload`, `searchResults`,
-`pendingConfirmation`, `summary`, **`finalAnswer`**, **`error`**, **`activeFlow`**.
+```
+guard (non-LLM: length cap, rate limit, auth)  [existing http-layer checks, unchanged]
+  → router  (7 labels)
+      ├── greeting     → templated, no LLM call
+      ├── knowledge    → retrieval (RRF pipeline) → generate
+      ├── stats        → direct dispatch, + retrieval when slots.withDocuments → generate
+      ├── agent        → ONE bounded agent (4 tools) → generate
+      ├── action       → sub-branch inside the node: slots.action 'book' | 'mail'
+      ├── refusal      → templated, no LLM call
+      └── capabilities → templated, no LLM call
+```
+
+- `about_me` and `complex` merge into **`knowledge`** — the boundary between them was
+  never real. Trend and comparison questions about Ayan are answered from retrieval alone
+  until Phase 9 adds the escalation.
+- `tech_web` and `complex`'s tool use merge into **`agent`**: one `makeAgentNode` call,
+  four tools (`resolve_time`, `metadata_filter`, `semantic_search`, `web_search`). Built
+  in Phase 8. `resolve_time` is deterministic; the two document tools are thin wrappers
+  over `retrieval/`'s existing arms, not copies of them. `TOOLSETS.agent` is the only
+  entry in the map — `action` is deliberately not an agent, so nothing else can act.
+- `book_catchup` and `send_mail` merge into **`action`**, branching internally on
+  `slots.action`. Booking is a templated scheduling link from a hosted provider; mail is
+  deterministic. Neither is an agent — no calendar tool, no confirmation step.
+- `stats_and_docs` merges into **`stats`**, branching internally on
+  `slots.withDocuments` — the same shape as `action`, decided at the Phase 7 gate. A pure
+  numbers question skips retrieval; a mixed one composes both halves. The label is
+  narrower than what the node does, which was the accepted cost of not keeping an eighth
+  label.
+- Escalation: `knowledge` may hand off to `agent` **once per turn**, budget enforced in
+  state. No other node escalates; `agent` never escalates back.
+- **`greeting`** is templated alongside `refusal` and `capabilities` (added Phase 6.5).
+  "Hey" is a greeting, not a request for the feature list — answering it with the
+  capability menu was a live bug. `capabilities` stays for the explicit ask.
+- **Legacy names** written by the pre-Phase-7 taxonomy are translated by
+  `LEGACY_ROUTE_MAP` (`state.js`) wherever a checkpointed thread can surface one —
+  `routeFromState`, and `previousRoute` in the router. Unknown and unmapped still falls to
+  `refusal`.
+
+**Conversation context.** The router classifies the latest message against a compacted
+block of the recent conversation plus `previousRoute`, not against raw history. Raw
+history was measurably worse than none: at the turn that motivated Phase 6.5 the live
+message was 0.9% of the router's input and classified `refusal` at confidence 1.00, where
+the same message alone classified `about_me`. Earlier messages are clipped; the message
+being classified is passed separately, last.
+
+State fields (supersedes LLD §3): `sessionId`, `rawQuery`, `messages`, `route`,
+`routeConfidence`, `slots`, `documents`, `statsPayload`, `searchResults`, `summary`,
+**`finalAnswer`**, **`error`**, **`activeFlow`**, **`previousRoute`** (the route the last
+turn took — written by `generate`, outside the per-turn reset, so a refinement can inherit
+it), **`agentEscalationUsed`** (the `knowledge`→`agent` handoff budget, reset per turn).
+`pendingConfirmation` is dropped — `action`'s `book` branch returns a templated link with
+no confirmation step, and `mail` is deterministic.
 
 ---
 
@@ -198,16 +246,36 @@ models capped at N turns, with `summary` populated only once history exceeds tha
 
 **Side effects only in tools, enforced in code — not by prompting.**
 
-- Writes are idempotent (per session, per intent).
-- Calendar writes require a confirmation recorded in state on a **prior** turn; the
-  `create_event` tool refuses without it.
+- `action`'s `mail` branch sends deterministically and idempotently per session/intent —
+  no agent decides whether to send.
 - The email recipient comes from `config.js` and is **never a tool argument** — the
   `send_email` tool schema has no recipient field, so no prompt injection can redirect it.
+- `action`'s `book` branch has no calendar integration or tool at all — it returns a
+  templated, hosted scheduling link. There is no confirmation step to guard.
 - Tool isolation is by what `TOOLSETS` binds, never by asking a model not to use something.
 
-**Sticky active flow.** While `activeFlow` is set (mid-booking, say), `routeFromState`
-returns to that flow unless the router classifies an explicit cancel or a topic change. A
-slot-filling reply like *"Tuesday 3pm"* must not be re-routed to `about_me`.
+**Holding a conversation in place — one precedence order.** Two mechanisms can keep a turn
+where the last one was: Phase 6.5's previous-route inheritance and `activeFlow` stickiness.
+Phase 7 reconciled them, and this is the order:
+
+1. **`error`** — the boundary already wrote a graceful answer; run no branch at all.
+2. **Cancel.** `slots.cancelsActiveFlow` ends the flow *and* blocks inheritance. "Never
+   mind" is the user ruling out precisely the thing both mechanisms would otherwise do,
+   so it beats both. Enforced in two places: `applyConfidenceFloor` (router) and
+   `routeFromState` (graph).
+3. **`activeFlow`** — a genuinely in-progress multi-turn task outranks inheritance: it
+   means a node is waiting on an answer, not merely that the last turn went somewhere.
+   Broken only by a classification into a different route at or above
+   `MOONMIND_TOPIC_CHANGE_CONFIDENCE`.
+4. **Inheritance** — applied in the router, and only below `MOONMIND_ROUTER_MIN_CONFIDENCE`,
+   so it never overrides a classification the model is sure of. Never inherits a route
+   that refuses or acts (`INHERITABLE_ROUTES`).
+5. **The router's classification.**
+6. **`refusal`** — unknown and unmapped.
+
+**`activeFlow` is dormant.** Nothing sets it today, so step 3 never fires and the live
+order is 1, 2, 4, 5, 6. The field and its stickiness are kept because Phase 9's mail flow
+is the first thing that will set it; whether `book` needs it too is a Phase 9 decision.
 
 **Testable offline.** `buildGraph` takes injected nodes and dependencies, so `test/agent/`
 exercises the whole graph with fake models and fake services — no network, no keys.

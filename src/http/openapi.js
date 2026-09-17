@@ -127,7 +127,7 @@ function buildComponents(maxMessageChars) {
           route: {
             type: "string",
             description: "Which branch of the graph answered.",
-            example: "about_me",
+            example: "knowledge",
           },
           answer: str("Ayan works primarily in Java, Spring Boot and .NET..."),
           documents: {
@@ -147,7 +147,7 @@ function buildComponents(maxMessageChars) {
       RunStep: object(
         {
           seq: int(3),
-          node: str("about_me"),
+          node: str("knowledge"),
           type: {
             type: "string",
             enum: [...STEP_TYPES],
@@ -171,14 +171,16 @@ function buildComponents(maxMessageChars) {
           sessionId: str(),
           status: { type: "string", enum: [...RUN_STATUSES] },
           question: str("what has Ayan built with Node?"),
-          route: { type: "string", nullable: true, example: "about_me" },
+          route: { type: "string", nullable: true, example: "knowledge" },
           answer: { type: "string", nullable: true, description: "Null until the run finishes." },
           error: { type: "object", nullable: true, additionalProperties: true },
-          documentIds: {
+          documents: {
             type: "array",
-            items: str(),
-            description: "What grounded the answer. Use /chat for the documents themselves.",
+            description:
+              "The documents that grounded the answer, in exactly the shape /chat returns. Empty until the run finishes.",
+            items: { type: "object", additionalProperties: true },
           },
+          documentIds: { type: "array", items: str(), description: "Their ids, for convenience." },
           documentCount: int(8),
           startedAt: str(),
           finishedAt: { type: "string", nullable: true },

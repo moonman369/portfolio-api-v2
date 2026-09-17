@@ -119,10 +119,11 @@ Nginx location block if SSE. Add `runs.js` to the ARCHITECTURE.md layout.
 about_me query and a stats query; an erroring node appears as an `error` step followed by a
 graceful answer.
 
-### `[~]` Phase 5 — Agent factory + `tech_web`
-*Built and covered offline. The live half of the "Done when" — 5 tech/AI questions
-returning web-grounded answers — has not run: there is no Tavily key in this working copy
-and Atlas is down. See the handoff entry's open item 1.*
+### `[x]` Phase 5 — Agent factory + `tech_web`
+*Ticked on Ayan's explicit call (2026-09-16) so Phase 6 could start, the same way Phases 0,
+3b and 4 were. Built and covered offline. **The live half of the "Done when" — 5 tech/AI
+questions returning web-grounded answers — was never run**: no Tavily key in this working
+copy and Atlas was down. Open item 1 in the Phase 5 handoff entry stands.*
 **⛔ GATE — settled 2026-09-13:** **Tavily** (Ayan's call, matching the LLD). It returns
 extracted page content rather than snippets, so `websearch.js` needs no scrape-and-extract
 layer and the agent can ground an answer from one call.
@@ -137,61 +138,107 @@ factory is reused unchanged in 6b and 7.
 gracefully; "book a meeting / send an email" injected into a tech question has no
 calendar/email path.
 
-### `[ ]` Phase 6a — Action decisions, integrations, tools
-**⛔ GATE first — five questions for Ayan, recorded in Decisions and CLAUDE.md:**
-(1) calendar provider (LLD assumes Google Calendar); (2) email provider (LLD recommends an
-HTTP API — Resend/SendGrid — over SMTP); (3) bookable hours + timezone; (4) confirmation
-mode: chat "yes" vs emailed link; (5) how the visitor gets their booking confirmation
-without the email tool ever sending to a visitor-supplied address.
-**Scope:** `src/integrations/calendar.js` and `email.js` (plain JS, timeouts; the email
-client reads the recipient only from config, `MOONMIND_OWNER_EMAIL`);
-`scripts/google-oauth.js` (one-time grant → refresh token in env, same pattern as
-`GITHUB_PAT`); tools `check_free_busy`, `create_event` (idempotent per session, refuses
-without a prior-turn confirmation in state — enforced in the tool), `send_email` (**no
-recipient field**); `TOOLSETS` entries for `book_catchup` and `send_mail`.
-**Done when:** each integration and tool passes isolated tests against a real test calendar
-and sandbox mailbox; `create_event` without confirmation is rejected; the `send_email`
-schema has no recipient.
+### `[x]` Phase 6 — Re-plan the remaining phases, then measure retrieval
+**Scope:** the 8-route taxonomy is superseded — no `complex` node, no `book_catchup`
+agent, no calendar/email booking stack. `docs/ARCHITECTURE.md`, this file, and
+`CLAUDE.md` rewritten to the 6-label graph (`knowledge` / `stats` / `agent` / `action` /
+`refusal` / `capabilities`, diagrammed in ARCHITECTURE.md §4). A debug mode added to
+`retrieve()` (per-arm hits, RRF-fused order, post-ranker order, post-rerank order — ids
+and titles only) behind the existing password header, plus `MOONMIND_RETRIEVAL_DEBUG` for
+the endpoint. `scripts/retrieval-ab.js` runs the Phase 3b question set across four configs
+(decompose on/off × rerank on/off), writing `docs/evals/retrieval-ab.md` with corpus size,
+per-question/config retrieved ids + rank changes + answers + latency + LLM call count, and
+recall-headroom numbers for 3 broad questions.
+**⛔ GATE:** present the A/B results; Ayan decides `DECOMPOSE_ENABLED`, `RERANK_ENABLED`
+and `k`, recorded in Decisions.
+**Done when:** docs match the new plan; debug mode returns per-stage ordering;
+`retrieval-ab.md` covers all four configs plus recall headroom; the gate is answered.
 
-### `[ ]` Phase 6b — `book_catchup` + `send_mail`
-**Scope:** both nodes from the Phase 5 factory (reuse, don't fork). Slot-filling (visitor
-name, contact, purpose, preferred window, timezone) persists in `slots` via the
-checkpointer; the node sets `activeFlow = 'book_catchup'` while in progress and clears it
-on completion or cancel. Always free/busy check before proposing times. Confirmation via
-`pendingConfirmation` in state, enforced by `create_event` — keep the state-flag approach
-unless it demonstrably can't work. Tight per-IP + sessionId rate limits for action routes.
-**Done when:** a full booking conversation (ask → fill slots over several turns → propose →
-confirm → event created → notification per Decision 5) works end to end on the test
-calendar. Tests: a mid-flow "Tuesday 3pm works" stays in `book_catchup`; "cancel" exits the
-flow; skipping confirmation never creates an event; `send_mail`'s tools are exactly
-`["send_email"]`; "send this to someone@else.com" still reaches only Ayan; the rate limit
-trips.
+### `[x]` Phase 6.5 — Conversation context hotfix
+*Behaviour only, on four bugs from a real session
+(`bd2d83a7-275a-450d-8a8c-dd97b74982b5`). No routes collapsed, no agent built, no
+escalation — those stay Phases 7-9.*
+**Scope:** the router classifies against a compacted conversation block plus an explicit
+`previousRoute` instead of raw history; prompt rules for refinements, and `refusal`
+narrowed to off-topic/unsafe only. `generate` gains a narrowing rule and a links rule so a
+request for a link returns the URL rather than a summary of it. A templated `greeting`
+route, varied across a fixed set, replaces answering "Hey" with the capability menu.
+`scripts/router-eval.js` gains a multi-turn suite — the single-turn one could not see any
+of this.
+**Done when:** the seven-turn session replays clean; an offline test proves the router
+gets history and the previous route and that an unsure follow-up does not refuse;
+single-turn eval accuracy does not regress; `complex` still returns "not implemented yet".
 
-### `[ ]` Phase 7 — `complex` node
-**Scope:** a deterministic `resolve_time` tool (no LLM) turning "2023", "now", "last year",
-"since I joined" into date ranges relative to the current date; `metadata_filter` and
-`semantic_search` tools as thin wrappers over `retrieval/` (same code paths, not copies),
-with metadata filters covering `date_start`, `completion_year`, `domain`, `subcategory`,
-`is_active`; `TOOLSETS.complex = [resolve_time, metadata_filter, semantic_search,
-web_search]`; `complex = makeAgentNode({ ... })`. Answers cite the documents and sources
-used. Handle any mixed-query routing decided in Phase 1.
-**Done when:** `docs/evals/complex.md` shows coherent, correctly-sourced answers for
-"backend skills 2023 vs now", "how has Ayan upskilled in AI", and "AI projects + market
-relevance today". Tests: exactly 4 bound tools; `resolve_time` unit cases.
+### `[x]` Phase 7 — Route collapse (7 labels) + `knowledge` node
+*A refactor: no new capability. The escalation originally scoped here moved to Phase 9,
+so `knowledge` answers the former `complex` questions from retrieval alone for now.*
+**⛔ GATE — settled 2026-09-17:** mixed stats+knowledge questions become
+`slots.withDocuments` on `stats`, not an eighth label (Ayan's call). Carried over
+unresolved from the Phase 1 gate; see Decisions.
+**Scope:** router relabeled to 7 outputs — `greeting`, `knowledge`, `stats`, `agent`,
+`action`, `refusal`, `capabilities`. `about_me` + `complex` merge into `knowledge`
+(`nodes/about-me.js` → `nodes/knowledge.js`, logic unchanged); `book_catchup` +
+`send_mail` into `action` behind `slots.action`; `stats_and_docs` into `stats` behind
+`slots.withDocuments`; `list_capabilities` renamed `capabilities`. `agent` and `action`
+are stubs until Phases 8 and 9. `LEGACY_ROUTE_MAP` translates all seven old names for
+checkpointed threads. Previous-route inheritance and `activeFlow` reconciled into one
+precedence order (ARCHITECTURE.md §5).
+**Done when:** router-eval passes on remapped labels with no per-route regression; 6.5's
+multi-turn fixture passes on the new labels; an offline test replays every legacy route
+value; the Phase 3b set routes through `knowledge`; the trend question is recorded in
+`docs/evals/knowledge.md` as Phase 9's baseline.
 
-### `[ ]` Phase 8 — Cutover + final structure audit
-**Scope:** (1) structure audit against ARCHITECTURE.md — layout, dependency direction,
+### `[x]` Phase 8 — `agent` node (one bounded agent, four tools)
+*Built and verified live. **One finding worth carrying into Phase 9:** the three portfolio
+questions this phase was asked to record all route to `knowledge`, not `agent` — Phase 7's
+taxonomy says questions about Ayan are never `agent`. The tools work; nothing sends those
+questions to them until Phase 9's escalation. Recorded in `docs/evals/agent.md` §2 by
+invoking the node directly.*
+**Scope:** `TOOLSETS.agent = [resolve_time, metadata_filter, semantic_search, web_search]`
+— `tech_web`'s `web_search` plus a deterministic `resolve_time` tool (no LLM; turns
+"2023", "now", "last year", "since I joined" into date ranges relative to the current
+date) and `metadata_filter` / `semantic_search` thin wrappers over `retrieval/` (same code
+paths, not copies; filters cover `date_start`, `completion_year`, `domain`, `subcategory`,
+`is_active`) — all bound to one `makeAgentNode` call, reused unchanged from Phase 5.
+Replaces the separate `tech_web` and `complex` routes.
+**Done when:** exactly 4 bound tools; `resolve_time` unit cases; live questions spanning
+both web-grounded and portfolio-metadata queries ("backend skills 2023 vs now", "how has
+Ayan upskilled in AI", "AI projects + market relevance today") get coherent, sourced
+answers, recorded in `docs/evals/agent.md`.
+
+### `[ ]` Phase 9 — `action` node (`book` | `mail`)
+**⛔ GATE first — questions for Ayan, recorded in Decisions and CLAUDE.md:** (1)
+scheduling-link provider (hosted, e.g. Calendly-style — no `check_free_busy`/`create_event`
+tool, no calendar integration); (2) email provider (HTTP API — Resend/SendGrid — over
+SMTP, recipient fixed via `MOONMIND_OWNER_EMAIL`, never a tool argument); (3) how a visitor
+is shown the link/confirmation; (4) whether either branch needs multi-turn `slots` state at
+all, given both are now deterministic and single-turn (ARCHITECTURE.md §5).
+**Scope:** `src/integrations/email.js` (plain JS, timeout); one `action` node, no agent,
+branching internally on `slots.action` (`'book'` | `'mail'`). `book` returns a templated
+scheduling link deterministically — no tool, no confirmation step. `mail` sends via
+`send_email` (**no recipient field** in its schema) deterministically. Replaces
+`book_catchup`/`send_mail` and the calendar/email tool-and-confirmation stack from the
+superseded Phase 6a/6b plan. Tight per-IP + sessionId rate limits for the action route.
+**Done when:** both branches covered by offline tests; `send_email`'s schema has no
+recipient; "send this to someone@else.com" still reaches only Ayan; the rate limit trips.
+
+### `[ ]` Phase 10 — Structure audit + monitoring
+**Scope:** structure audit against ARCHITECTURE.md — layout, dependency direction,
 framework boundary, file sizes, grab-bag modules, unused deps; fix small drift, report
-anything larger and wait. (2) Monitoring: per-run route, per-node latency, errors,
-tool-call counts, reusing `runs`/`steps`, plus a summary script or endpoint.
-(3) `docs/CUTOVER.md`: the exact frontend change (separate repo — instructions only),
-rollback plan, monitoring checklist, agreed zero-traffic period. (4) Regression: run every
-eval script against production.
+anything larger and wait. Monitoring: per-run route, per-node latency, errors, tool-call
+counts, reusing `runs`/`steps`, plus a summary script or endpoint.
+**Done when:** the audit is clean or its exceptions are explicitly recorded; monitoring
+surfaces per-route/per-node stats from real run data.
+
+### `[ ]` Phase 11 — Cutover
+**Scope:** `docs/CUTOVER.md`: the exact frontend change (separate repo — instructions
+only), rollback plan, monitoring checklist, agreed zero-traffic period. Regression: run
+every eval script against production.
 **⛔ GATE:** decommissioning the old MoonMind pipeline happens in the old repo only after
 Ayan confirms zero traffic for the agreed period. Don't touch that repo from here — write
 the steps into CUTOVER.md for a separate session.
-**Done when:** the audit is clean, evals pass in production, CUTOVER.md is complete, and
-Ayan has switched the frontend.
+**Done when:** evals pass in production, CUTOVER.md is complete, and Ayan has switched the
+frontend.
 
 ---
 
@@ -700,6 +747,343 @@ never appears in an error message.
 
 ---
 
+### Phase 6 — Re-plan + retrieval measurement — 2026-09-16
+
+**Shipped.** The docs rewritten to the 6-label graph, a per-stage retrieval debug trace,
+and a live A/B eval over the real 42-document corpus. 339 offline tests pass (1 changed).
+Phase 5 ticked on Ayan's explicit call at the start of this session — its live eval was
+still unrun, same pattern as Phases 0/3b/4.
+
+**Files.**
+- `docs/ARCHITECTURE.md` — §4's route taxonomy and state-field list replaced by the
+  6-label graph (`knowledge`/`stats`/`agent`/`action`/`refusal`/`capabilities`); §5's
+  stickiness and side-effects sections updated to match (no calendar tool, no
+  confirmation step).
+- `docs/PROGRESS.md` — this file: the remaining phase checklist renumbered 7-11 to the
+  new scopes; Phase 6 deviations recorded; three Decisions appended.
+- `CLAUDE.md` — the Guardrails "calendar writes" line replaced with the `action` node's
+  actual shape (no calendar tool).
+- `src/config.js` — `MOONMIND_RETRIEVAL_DEBUG`, `retrieval.debugEnabled`.
+- `src/retrieval/search.js` — `searchAllArms` also returns `armHits` (id/title/score per
+  arm), always computed (cheap — the hits are already in memory), surfaced only when asked.
+- `src/retrieval/index.js` — `retrieve({ debug: true })` returns `.debug`: `arms`, `fused`
+  (RRF order, sorted by `rrf_score` for readability), `ranked`, `reranked`. Exported
+  `buildDebugTrace` for reuse (`scripts/retrieval-ab.js`).
+- `src/agent/state.js` — `retrievalDebug` state field, per-turn reset.
+- `src/agent/nodes/about-me.js`, `src/agent/nodes/stats.js` — pass `debug` through to
+  `retrieve()` and carry `retrievalDebug` onto state (including through
+  `stats_and_docs`).
+- `src/agent/index.js` — `toTurn()` carries `retrievalDebug`.
+- `src/http/chat.js` — `POST /chat` adds `retrievalDebug` as an extra field, only when
+  `MOONMIND_RETRIEVAL_DEBUG` is on; absent entirely otherwise. Not wired into
+  `POST /runs`/`GET /runs/:runId` — see Deviation 42.
+- `scripts/retrieval-ab.js` (new) — calls `retrieve()` and `generate` directly, in
+  process, with per-config overrides; counts real LLM calls via a wrapping proxy rather
+  than guessing from flags.
+- `docs/evals/retrieval-ab.md` (new) — the live results (see below).
+- `.env.example` — `MOONMIND_RETRIEVAL_DEBUG` documented.
+- `test/agent/about-me.test.js` — updated for the new `retrievalDebug` key.
+
+**Env vars.** One added, bringing the total to 79: `MOONMIND_RETRIEVAL_DEBUG` (default
+`false`).
+
+**The eval, run live** against the real 42-document corpus, real OpenAI and Gemini:
+9 questions (Phase 3b's about_me set, minus the mixed stats+docs one) × 4 configs, plus 3
+broad recall-headroom questions. Full per-question/config detail — retrieved ids, what the
+reranker moved, the answer, latency, LLM call count — plus the recall table is in
+`docs/evals/retrieval-ab.md`. Findings and the resulting Decisions are above; not repeated
+here.
+
+**Deviations.** Two, recorded above (41-42): the taxonomy supersession, and the debug
+trace's scope (not wired into the run feed).
+
+**Open items.**
+1. **`k` is only recorded as a Decision here, not applied.** The gate said "change no
+   defaults," so `config.js` still defaults `MOONMIND_FINAL_DOCUMENT_LIMIT` to 10. Ayan
+   applies `MOONMIND_FINAL_DOCUMENT_LIMIT=15` (and `MOONMIND_RERANK_ENABLED=true`) to the
+   deployed `.env`; whether the *default* in `config.js` should also move is for whichever
+   phase next touches retrieval config to decide, not assumed here.
+2. **The router-relabeling gate carried into Phase 7** (mixed stats+knowledge routing,
+   since `stats_and_docs` has no slot in the 6-label taxonomy) is unresolved by this
+   session — it is a re-statement of the still-open Phase 1 gate, not a new one.
+3. **Carried over, unchanged:** the five unrun live checks from Phase 5's handoff (Phase
+   0's deploy and parity run, Phase 1's `router-eval` — actually run out-of-band on
+   2026-09-16, see the entry above, so this is now four — Phase 2's `stats-eval`, Phase
+   3a's `retrieval-parity`, Phase 3b's `about-me-eval`), Phase 4's two live re-checks, and
+   `npm test` being broken (`nodemon --test`).
+
+---
+
+### Phase 6.5 — Conversation context hotfix — 2026-09-16
+
+**Shipped.** Four live bugs from session `bd2d83a7-275a-450d-8a8c-dd97b74982b5`, fixed and
+verified by replaying all seven of its turns through the real graph. 348 offline tests pass
+(8 new). Router eval: **33/33 single prompts, 11/11 conversation turns.** No routes
+collapsed, no agent, no escalation — Phases 7-9 are untouched.
+
+**The investigation mattered more than the fixes.** Two of the four briefs' premises were
+wrong, and acting on them as written would have changed nothing:
+
+1. **"The router classifies each message in isolation" — it does not.** It had been
+   passing full history since Phase 1. Measured on the real turn: *with* history it
+   returned `refusal@1.00` three times out of three; the identical message with *no*
+   history returned `about_me@0.80` twice out of two. History was not missing, it was
+   **the cause** — the live message was 55 of 5857 characters, 0.9% of the router's input,
+   and the assistant's own resume prose drowned it.
+2. **"Ensure `external_links` survives the sanitizer" — it already did.** `rank.js`
+   passes `external_links` and every metadata date field through, verified live: 11 of the
+   15 documents retrieved for "Ayan's resume" carry links into the sanitized view, and the
+   top one carries the resume URL. Given that same context and no history, `generate`
+   already returned the correct URL in 220 characters. The failure was behavioural, not
+   plumbing — so this became a prompt fix, and the sanitizer was left alone.
+
+**Files.**
+- `src/agent/nodes/router.js` — `splitForRouter` pulls out the message being classified
+  and compacts everything before it; dead-ends are filtered *before* the window is applied
+  so a run of refusals cannot eat the budget; `applyConfidenceFloor` now prefers
+  `previousRoute` over a blanket `about_me`, and the error path uses the same rule.
+- `src/agent/prompts.js` — `buildRouterContext` (compact turns + previous route, clipped
+  at 200 chars each); router rules for refinements and a narrowed `refusal`; generate rules
+  for narrowing and for links; `GREETINGS` + `buildGreetingAnswer`.
+- `src/agent/nodes/generate.js` — records `previousRoute` on both the synthesis and the
+  pass-through path.
+- `src/agent/nodes/simple.js` — the `greeting` node.
+- `src/agent/state.js` — the `greeting` route, the `previousRoute` field (outside
+  `PER_TURN_RESET`), and `INHERITABLE_ROUTES`.
+- `src/agent/index.js`, `src/config.js`, `.env.example`, `docs/ARCHITECTURE.md`.
+- `scripts/router-eval.js` — the multi-turn suite, four `greeting` prompts, and the
+  `require("dotenv")` line deleted (Phase 5's open item 5: it violated the no-dotenv rule,
+  did nothing, and would have broken a clean `npm ci`).
+- Tests: `test/agent/nodes.test.js` (+6), `graph.test.js` (+1), `about-me.test.js` (+1).
+
+**Env vars.** One added, total 80: `MOONMIND_ROUTER_HISTORY_MESSAGES` (default 6). It is
+clamped by `MOONMIND_HISTORY_MAX_MESSAGES` at use, so it can only ever narrow the existing
+window — no second history mechanism.
+
+**The replay, before and after** (live, real models, real Atlas):
+
+| turn | message | was | now |
+|---|---|---|---|
+| 1 | "Hey!" | `list_capabilities`, 7-item menu | `greeting`, 85 chars |
+| 2 | "Ayan's resume" | overview, 15 docs | the resume URL, 118 chars |
+| 3 | "Give me only the resume please" | same overview again | the URL |
+| 4 | "...no other link please" | same overview again | the URL |
+| 5 | "Not the Resume overview.... I want just the resume link" | **`refusal`** | `about_me`, the URL, 128 chars |
+| 6 | "Hey" | the same menu, verbatim | a *different* greeting |
+| 7 | "How have Ayan's AI skills evolved over time?" | `complex`, not implemented | unchanged — correct for now |
+
+**Why the multi-turn eval exists.** The single-turn suite classified turn 5 correctly in
+isolation and always would have: the bug only exists in context. A 29/29 green eval sat
+next to this bug for three days. The new suite threads history and the *actual* previous
+route turn by turn, so a wrong turn shows its knock-on effect instead of being silently
+corrected, and it carries the failing session verbatim as a fixture.
+
+**Deviations.** Two, recorded below (43-44).
+
+**Open items.**
+1. **⛔ Retrieval breadth (Fix 5) was deliberately not done — it needs your call.** The
+   gate is not broken, it is *disabled*: `MOONMIND_MIN_SEMANTIC_SCORE` defaults to 0 and
+   `rankDocuments` treats 0 as "no gate". Both it and `k` are already config-driven, so
+   there is no code to write — only a number to choose, and the Phase 6 data does not
+   support one. See Deviation 44 and the question at the end of this entry.
+2. **"Ayan's resume" now returns the link rather than a summary.** That is what the
+   visitor in this session spent four turns trying to get, so I read it as right — but it
+   is a judgement call the links rule makes on every bare "show me X" ask, not just on
+   explicit "give me the link" ones. One line in `GENERATE_SYSTEM_PROMPT` if you want
+   summary-plus-link instead.
+3. **`npm test` is fixed** (your commit `265d4a7`), closing an open item carried since
+   Phase 0. Phase 4's and Phase 5's handoffs still list it as broken; it is not.
+4. **Carried over:** Phase 0's deploy and parity run, Phase 2's `stats-eval`, Phase 3a's
+   `retrieval-parity`, Phase 3b's `about-me-eval`, Phase 4's two live re-checks, Phase 5's
+   live Tavily check.
+
+**The question for Fix 5.** Semantic scores on this corpus sit in a 0.81-0.88 band because
+every document is about the same person — absolute cosine cannot separate "answers this
+question" from "is about Ayan at all". For "Ayan's resume": 0.8814 top, 0.8519 second,
+then a flat plateau to 0.8087 at rank 30. A floor of ~0.84 gives a sensible 6 documents
+there, but applied to "backend technologies" it keeps 6 where Phase 6 measured **11**
+genuinely relevant — it would reverse the `k=15` decision from two commits ago. And
+enabling the floor at all silently drops every metadata-only hit, which has no semantic
+score by construction (`rank.js`, `computeBoost` comment). So the options are a relative
+gate (keep everything within X of the top score), a per-route `k`, or leaving it alone
+until Phase 7 gives `knowledge` its own retrieval settings. Picking a number by hand is
+exactly the "tune by feel" the brief ruled out, so I stopped here.
+
+---
+
+### Phase 7 — Route collapse — 2026-09-17
+
+**Shipped.** Ten labels down to seven, as a pure refactor — no new capability. 353 offline
+tests pass (8 new). Router eval: **35/35 single prompts, 11/11 conversation turns**, with
+every pre-collapse prompt kept and remapped rather than rewritten.
+
+**The gate, and what the brief missed.** The brief listed six legacy routes to map. Seven
+were being removed: `stats_and_docs` was absent from the list, had no slot in the seven
+labels, and was the subject of the ⛔ GATE recorded against this phase since Phase 1. It
+was not theoretical — 2 live runs used it, `createStatsAndDocsNode` composes stats and
+retrieval today, and it was advertised in the capability menu. Raised rather than guessed;
+Ayan's call is in Decisions.
+
+**A correction worth keeping, because it is the second time this pattern has appeared.**
+The brief said live threads hold `route: <legacy>` and to map it in `routeFromState`.
+Verified against a real checkpoint: the stored value is real (`route: "tech_web"`), but
+`PER_TURN_RESET` sets `route: null` before the router runs, so `routeFromState` never sees
+it. The field that actually carries a legacy value into this taxonomy is **`previousRoute`**
+— same thread, same value, and *outside* the reset. Without translating it there, every
+pre-Phase-7 thread would have silently lost both 6.5's inheritance (`INHERITABLE_ROUTES`
+stops matching) and its context block. The map is applied in both places. As in Phase 6.5,
+the instruction was right and the stated mechanism was not.
+
+**Files.**
+- `src/agent/state.js` — the seven-label `ROUTES`, `LEGACY_ROUTE_MAP`, `LEGACY_NODES`,
+  `resolveLegacyRoute`, `restoreLegacySlots`, `ACTION_ROUTES` and `INHERITABLE_ROUTES`
+  updated. The legacy vocabulary lives here, not in `graph.js`, because the router needs
+  it too and `state.js` imports nothing but LangGraph — no cycle.
+- `src/agent/graph.js` — `routeFromState` resolves legacy names for both `route` and
+  `activeFlow`, and carries the full precedence order as a comment; `buildGraph` registers
+  `LEGACY_NODES` alongside the routes so a replayed thread has somewhere real to land.
+- `src/agent/nodes/router.js` — `withDocuments` and `action` added to the schema and
+  lifted into slots; `previousRoute` translated before it is shown to the model or tested
+  for inheritance; a cancel now blocks inheritance.
+- `src/agent/nodes/about-me.js` → **`src/agent/nodes/knowledge.js`** (git mv, logic
+  unchanged), and its test alongside it.
+- `src/agent/nodes/stats.js` — the composed node branches on `slots.withDocuments`, and
+  skips retrieval entirely without it.
+- `src/agent/prompts.js` — router labels and boundaries edited in place; 6.5's history
+  block, previous-route field, refinement rule and refusal guardrail are untouched.
+  Capability copy rewritten for four advertised routes.
+- `src/agent/index.js` — `STUBBED_ROUTES` is now `agent` + `action`; `tech_web` kept wired
+  as a legacy node.
+- `scripts/router-eval.js` — remapped, not rewritten; prompts may now assert slots.
+  `scripts/about-me-eval.js` → **`scripts/knowledge-eval.js`**.
+- `docs/ARCHITECTURE.md` — the taxonomy block (7 labels), and §5's precedence order.
+- `docs/evals/knowledge.md` (new) — the Phase 9 baseline.
+
+**Env vars.** None added; still 80.
+
+**Verified live.**
+- Router eval 35/35 and 11/11. Per route: knowledge 7/7, stats 9/9 (including 5 mixed
+  questions asserting `withDocuments`), agent 3/3, action 6/6 (3 book, 3 mail), refusal
+  3/3, capabilities 3/3, greeting 4/4. No per-route regression against Phase 1's numbers.
+- 6.5's seven-turn fixture passes on the new labels: "Hey" → `greeting`, the resume
+  follow-ups stay on `knowledge`, nothing routes to `refusal`.
+- The Phase 3b question set: 10/10, nine to `knowledge` and the mixed one to `stats` with
+  `withDocuments` set.
+- `"How have Ayan's AI skills evolved over time?"` → `knowledge`, 15 documents, a
+  chronologically ordered answer from retrieval alone. Recorded in `docs/evals/knowledge.md`.
+- Slot end to end: the mixed question returns stats **and** 15 documents; a pure numbers
+  question returns stats and **0** documents, skipping retrieval rather than discarding it.
+- Sanitizer **verified, not changed**: `external_links` on 9 of 15 documents and a date
+  field on 12 of 15 still reach `generate`, exactly as 6.5 left it.
+
+**Deviations.** Two, recorded below (45-46).
+
+**Open items.**
+1. **`agent` is a stub, so web/tech questions answer "not available yet" until Phase 8.**
+   This is the one live capability regression in the phase, and it is deliberate — the
+   brief specifies a stub, and the four-tool agent is Phase 8's whole scope. The working
+   `tech_web` node is still wired for legacy threads, so nothing was deleted.
+2. **A mixed question routed to `stats` cannot reach Phase 9's escalation**, since that
+   edge runs from `knowledge`. Phase 9 decides whether the mixed path should instead be
+   `knowledge` + `slots.withStats`. Not moved now, on Ayan's explicit instruction.
+3. **`activeFlow` is still dormant** — nothing sets it. Kept, with its stickiness, because
+   Phase 9's mail flow is the first thing that will.
+4. **Carried over:** Phase 0's deploy and parity run, Phase 2's `stats-eval`, Phase 3a's
+   `retrieval-parity`, Phase 3b's `knowledge-eval` (renamed this phase), Phase 4's two live
+   re-checks, Phase 5's live Tavily check, and Phase 6.5's open question on the retrieval
+   gate (`MOONMIND_MIN_SEMANTIC_SCORE` is still 0, so `k` is fixed at 15).
+
+---
+
+### Phase 8 — Unified agent — 2026-09-17
+
+**Shipped.** Three new tools and one agent bound with four, replacing Phase 5's
+single-tool `tech_web`. `makeAgentNode` reused unchanged, as asked. 375 offline tests pass
+(20 new). `docs/evals/agent.md` records both suites live.
+
+**The finding that matters most.** The three questions the brief names — "backend skills
+2023 vs now", "how has Ayan upskilled in AI", "AI projects + market relevance today" — are
+all **about Ayan**, and Phase 7's router sends those to `knowledge`, never `agent`
+("never agent, however much technology it mentions"). Measured: all three classify
+`knowledge` at 0.90. So the tools are built and work, but **nothing routes to them for a
+portfolio question until Phase 9's escalation lands**. Rather than bend the router — that
+would undo a Phase 7 decision recorded in ARCHITECTURE.md — the eval invokes the node
+directly for those three and prints the routes alongside, so the gap reads as a gap.
+
+**Two live defects found and fixed while evaluating.**
+1. **The agent stopped searching, and invented URLs instead.** The first eval run had all
+   five tech questions calling `web_search` zero times while printing 3-4 links each —
+   fabricated from training memory. My first prompt draft said to search "only when the
+   answer depends on something current", which gpt-4o-mini read as permission to skip.
+   Fixed by making it unconditional for non-Ayan questions ("you have no reliable
+   knowledge of what is current") plus an explicit rule that every URL must have come back
+   from a search in that conversation. Re-run: 5 web sources on every question, and a
+   check across all five answers found **zero cited URLs that no tool returned**.
+2. **`toTurn` never surfaced `searchResults`.** Written by every agent node since Phase 5,
+   but absent from the turn summary, so every caller — `/chat`, the evals — saw zero
+   sources for agent answers. Found because the eval reported `sources=0` while the server
+   log showed a successful search. One line; it has been wrong since Phase 5.
+
+**Files.**
+- `src/agent/tools.js` — `resolveTimeExpression` (pure), and the `resolve_time`,
+  `semantic_search` and `metadata_filter` tools. The document tools call `searchAllArms`,
+  the same function `retrieve()` uses, differing only in the plan they hand it; nothing
+  re-implements a query, a projection or the fusion. Rendering goes through
+  `sanitizeForPrompt`, so `impact_score` and `summary_for_embedding` cannot reach the
+  model from a tool either. `TOOLSETS.tech_web` deleted; `TOOLSETS.agent` is the only entry.
+- `src/agent/prompts.js` — `TECH_WEB_SYSTEM_PROMPT` → `AGENT_SYSTEM_PROMPT`: which tool
+  for which question, document tools preferred for anything about Ayan, citation rules for
+  both kinds of source, and the two-period rule for comparisons.
+- `src/agent/index.js` — `nodes.agent` built from the factory; `nodes.tech_web` points at
+  the same function so a legacy thread gets the four-tool agent; `searchResults` added to
+  `toTurn`; `STUBBED_ROUTES` down to `action`.
+- `src/config.js`, `.env.example` — `MOONMIND_TIMEZONE`; `MOONMIND_AGENT_MAX_STEPS`
+  default 4 → 6.
+- `scripts/agent-eval.js`, `docs/evals/agent.md` (both new).
+- `test/agent/tools.test.js` (new, 20 tests); `agents.test.js` and `index.test.js` updated.
+
+**Env vars.** One added, one default changed. Total 83. `MOONMIND_TIMEZONE`
+(`Asia/Kolkata`) — Ayan's zone, not the server's, because "last year" must not change
+meaning because a container runs in UTC. `MOONMIND_AGENT_MAX_STEPS` 4 → 6: with four tools
+a two-period comparison legitimately spends a call resolving dates and one per search
+before the call that writes the answer, and 4 truncated those.
+
+**Verified live.**
+- Five tech questions through the whole graph: all route `agent`, all return 5-15 web
+  sources, no invented URLs.
+- Three portfolio questions on the node directly: "2023 vs now" called `metadata_filter`
+  **twice**, once per period (`dates 2023-01-01..2023-12-31` and `dates 2026-09-17..`),
+  which is the two-period rule working; the other two chose `semantic_search`. **None of
+  the three used `web_search`** — the document-tool preference holds.
+- Run feed: `agent | tool | web_search -> 5 results`, alongside `agent.scope_check`.
+- Certificate links surfaced from document `external_links` in a portfolio answer, which
+  is the Phase 6.5 sanitizer behaviour still working through a tool.
+
+**Deviations.** Two, recorded below (47-48).
+
+**Open items.**
+1. **Phase 9 must close the routing gap.** Until the `knowledge` → `agent` escalation
+   exists, the document tools are only reachable by calling the node directly.
+   `docs/evals/agent.md` §2 is the baseline for what the escalation should produce.
+2. **`searchResults` is in `toTurn` but not in the HTTP response.** `/chat` returns
+   `documents` but not the agent's sources, so a frontend rendering an agent answer has
+   its citations only as markdown inside the prose. Adding it is a response-shape change
+   and belongs with Phase 11's cutover, next to `docs/FRONTEND_INTEGRATION.md`.
+3. **`MOONMIND_AGENT_MODEL` is still unset**, so the agent runs on `gpt-4o-mini` via the
+   RESPONSE fallback. Phase 5 flagged it as weak at deciding when to search, and this
+   phase saw exactly that — it took an explicit "you do not know what is current" to make
+   it search at all. Worth setting to something stronger and re-running this eval.
+4. **`src/agent/tools.js` is now 474 lines**, third behind `prompts.js` (517) and
+   `openapi.js` (503), and one of eight files over the ~250 guideline. ARCHITECTURE §1
+   says `tools.js # every tool + TOOLSETS map`, so splitting it needs a gate. The obvious
+   cut is the pure date logic, which has no LangChain in it at all. One for the Phase 10
+   audit, along with the other seven.
+5. **Carried over:** Phase 0's deploy and parity run, Phase 2's `stats-eval`, Phase 3a's
+   `retrieval-parity`, Phase 3b's `knowledge-eval`, Phase 4's two live re-checks, and
+   Phase 6.5's open question on the retrieval gate.
+
+---
+
 ---
 
 ## Decisions
@@ -743,6 +1127,40 @@ never appears in an error message.
   expanded, so the agreed value is the home-relative `portfolio-api-v2`.
 - **2026-09-12 — CI runs `npm test` before building the image.** The old workflow built
   and deployed without ever running the tests.
+- **2026-09-16 — `MOONMIND_RERANK_ENABLED=true`** (Ayan, at the Phase 6 gate, from
+  `docs/evals/retrieval-ab.md`). The reranker consistently reordered 3-10 of the top 10
+  candidates and, on the questions that matter — "strongest skills, and which projects
+  demonstrate them" and the RAG-projects question — it tied skills to the projects that
+  demonstrate them and surfaced relevant documents RRF alone left outside top-10, for one
+  extra LLM call and +0.5-1s.
+- **2026-09-16 — `MOONMIND_DECOMPOSE_ENABLED` stays `false`** (Ayan, same gate). It cost
+  2-3 extra LLM calls and ~1.5s on every question, including the 7 of 9 that were
+  single-part, for a top-10 and answer nearly identical to decompose-off. Its one clear win
+  (the multi-part skills question) was already fixed by the reranker alone.
+- **2026-09-16 — `MOONMIND_FINAL_DOCUMENT_LIMIT` (k) raised 10 -> 15** (Ayan, same gate).
+  Recall-headroom measurement found 2 of 3 broad questions have more genuinely relevant
+  documents (11-12) than k=10 returns, and the corpus is small enough (42 documents) that
+  the extra context is cheap. This phase changed no defaults itself — Ayan applies the new
+  value to the deployed `.env`; Phase 7 is where `config.js`'s default would move if that
+  is what this decision is later understood to mean for a clean checkout.
+- **2026-09-17 — Mixed stats+knowledge queries are a slot on `stats`, not a label**
+  (Ayan, at the Phase 7 gate, closing the question left open since Phase 1). The router
+  sets `slots.withDocuments` and the existing composed node branches on it, the same shape
+  `action` uses for `slots.action`. The alternative — an eighth label — was rejected as
+  carrying its own node and its own router bullet for what is one boolean. **Note the
+  label is now narrower than what the node does:** `stats` also retrieves. Recorded here
+  because that is a real readability cost, accepted deliberately.
+- **2026-09-17 — Legacy route names are translated, not dropped** (Phase 7). 20 live
+  threads carried pre-collapse values, so `LEGACY_ROUTE_MAP` covers all seven old names.
+  `tech_web` maps to **itself**, not to `agent`: the node still works and `agent` is a
+  stub until Phase 8, so collapsing it would turn a working answer into "not available
+  yet". Unknown-and-unmapped still falls to `refusal`.
+- **2026-09-17 — One precedence order for holding a conversation in place** (Phase 7):
+  error → cancel → `activeFlow` → inheritance → classification → refusal, documented in
+  ARCHITECTURE.md §5. A cancel beats **both** stickiness and inheritance, which is new:
+  before this, "never mind" could still be overridden by 6.5's inheritance on a
+  low-confidence turn. `activeFlow` outranks inheritance because it means a node is
+  waiting on an answer, not merely that the last turn went somewhere.
 
 ---
 
@@ -1322,3 +1740,246 @@ move and is the clearest candidate yet for the Phase 8 structure audit.
 
 **Env vars.** Two added, total 76: `MOONMIND_SCOPE_GUARD_ENABLED` (default true) and
 `MOONMIND_EXCLUDED_TOPICS` (empty).
+
+### Out-of-band: the run feed returns documents — 2026-09-15
+
+**Reverses a Phase 4 decision, on Ayan's call**, ahead of the frontend cutover work.
+
+Phase 4 stored `documentIds` rather than documents, so the feed would not become a second
+copy of the corpus. That held while `/chat` was the frontend's chat path. It stops holding
+now that the frontend drives chat entirely from `POST /runs` + `GET /runs/:runId`: with ids
+only, either source rendering is lost or the frontend calls both endpoints and **the graph
+runs twice for every question**, doubling model and Tavily cost.
+
+**Changed.** `finishRun` stores `turn.documents`; `toFeedResponse` puts them through
+`toResponseDocuments` — the same function `/chat` uses, so the two payloads cannot drift.
+Verified live: an `about_me` run returns 10 documents with identical keys to `/chat`
+(`id, title, category, tags, content_full, metadata, score, semantic_score,
+retrieval_sources, rrf_score, retrieval_score, boost_score`) and `summary_for_embedding`
+stripped. `documentIds` and `documentCount` stay, for callers that only want the ids.
+
+**Cost accepted.** The runs collection now holds document bodies. It is bounded by
+`MOONMIND_RUN_RETENTION_DAYS` (7) and by the fact that only retrieving routes populate it.
+Worth watching on the Atlas free tier if traffic grows — the row size is roughly the
+`/chat` payload per run.
+
+**Measured run times** (useful for the frontend's polling): `about_me` 7.7s, `tech_web`
+20.1s. The hard cap is `MOONMIND_RUN_TIMEOUT_MS` (120s).
+
+**Also written:** `docs/FRONTEND_INTEGRATION.md` — the API contract and migration brief to
+hand to the frontend repo. It is the backend half of what Phase 8's `CUTOVER.md` will
+cover; Phase 8 should reference it rather than restate it.
+
+### Out-of-band: debug tracing for agent runs — 2026-09-15
+
+**Asked for.** A way to watch the agentic steps while debugging behaviour.
+
+**What already existed.** Good failure logging — `agent.node.failed` with a stack,
+`agent.router.fallback`, `agent.stats.source_unavailable`, `agent.about_me.degraded`,
+`agent.web_search`, `agent.scope_guard.blocked`, `agent.node.truncated`. What was missing
+was the **happy path**: which nodes ran, in what order, how long each took, and what each
+one decided. The run feed captures that, but only into Mongo and only in redacted form.
+
+**Where it went.** `withErrorBoundary` in `graph.js` wraps every node, so instrumenting
+there covers `/chat` (which uses `.invoke()` and produces no feed), the run feed, the eval
+scripts and the tests — from one place, with no node aware of it.
+
+**Two levels, both off by default.**
+- `MOONMIND_DEBUG` — `agent.run.start` / `agent.node.start` / `agent.node.end` /
+  `agent.route` / `agent.run.end`, each with `runId`, `sessionId` and `ms`.
+- `MOONMIND_DEBUG_MODELS` — LangChain's own `verbose`, set in `models.js`: every prompt and
+  completion in full. Kept separate because the volume is on a different scale; one
+  `about_me` turn prints ten documents of context. The intended workflow is
+  `MOONMIND_DEBUG` to find the node, then this to see what it was asked.
+
+**`describeUpdate` vs `summarizeUpdate`.** Deliberately two functions. The feed's
+`summarizeUpdate` (`runs.js`) is a redaction whitelist for a Mongo collection; this one is
+for the server log the operator already sees stack traces in, so it keeps **slot values**,
+**document ids** and a 140-character answer preview — the things that actually separate a
+bad route from a bad retrieval. It is still a whitelist rather than a serializer: an LCEL
+sub-step's output carries the resolved config, API keys included, and a test asserts that
+shape summarizes to `{}`.
+
+**`agent.route` is the high-value line.** It prints the branch taken alongside the
+classification and the sticky `activeFlow` that may have overridden it — the answer to
+"why did this question go there".
+
+**One defect found and fixed while building it.** The first version called `getConfig()`
+unconditionally, which broke `test/agent/graph.test.js` — that file drives `buildGraph`
+with an explicit `topicChangeConfidence` specifically so it needs no environment.
+`debugEnabled()` now tolerates config being absent. A tracer must never be the reason a
+run fails.
+
+**Verified live.** A real `about_me` turn with `MOONMIND_DEBUG=true` traces router (3.2s,
+`route=about_me confidence=0.9`) → `agent.route` → about_me (10 document ids) → generate
+(4.3s, 1058 chars) → `agent.run.end` 16.5s. With the flag off, zero `agent.*` lines — a
+test asserts that too. 337 tests pass (5 new).
+
+**Env vars.** Two added, total 78.
+
+### Out-of-band fix: the router refused from its own history — 2026-09-16
+
+**Reported.** `"Ayan's resume"` came back `route: refusal, confidence: 1` in a real run,
+*after* `resume` had been added to the `about_me` bullet in `ROUTER_SYSTEM_PROMPT`. The
+question was why the prompt edit had not taken.
+
+**It had taken. The prompt was never the lever.** With the edited prompt and no history,
+8 identical calls returned `about_me@0.9` — the edit moved it up from 0.8. The refusal
+came from **session history**:
+
+1. The router classifies from `recentMessages(state.messages, …)`, not from the latest
+   message alone.
+2. `generate` appends every answer to `messages`, including `REFUSAL_ANSWER`.
+3. So the router reads its own past refusals as precedent and refuses again.
+
+Two refused resume-style asks in one session was enough to flip it, reproducing the
+reported trace exactly — `refusal@1.0`. A confidence of 1.0 also clears
+`MOONMIND_ROUTER_MIN_CONFIDENCE`, so the low-confidence floor never catches it, and the
+floor lands on `about_me` anyway rather than `refusal`.
+
+**Measured, because the obvious fix does not work:**
+
+| variant | result over 4 calls |
+|---|---|
+| as-is, poisoned history | 4x `refusal@1.0` |
+| + explicit "earlier refusals are not precedent" rule in the prompt | 4x `refusal@1.0` |
+| canned dead-ends filtered out of the router's history | 4x `about_me@0.9` |
+| both | 4x `about_me@0.9` |
+
+The prompt rule failed 4/4. The contamination is in the input, so the input is what
+changed — this is worth remembering the next time a routing bug looks promptable.
+
+**Fixed.**
+1. `CANNED_DEAD_ENDS` in `prompts.js` — the five answers that say "I can't help with this"
+   (`REFUSAL_ANSWER`, `ERROR_ANSWER`, `NOT_IMPLEMENTED_ANSWER`, `OUT_OF_SCOPE_ANSWER`,
+   `AGENT_NO_ANSWER`). Exact strings, since they are our own constants, so a genuine
+   answer that happens to sound apologetic is never dropped. `buildTruncatedAnswer` is
+   deliberately excluded: it reports partial progress, not a refusal.
+2. `routerHistory()` in `nodes/router.js` filters them out of what the router sees. Real
+   answers stay — they are what lets the router resolve "what about that?".
+3. Two regression tests: the dead-ends are filtered, and a real answer still reaches the
+   router.
+
+**Router eval, finally run — and it is now the regression net it was meant to be.**
+Baseline before this session's changes: **27/29**, with two misses unrelated to the
+resume bug:
+- `about_me` 3/4 — "What backend technologies does Ayan work with?" → `tech_web` (0.80)
+- `tech_web` 2/3 — "How does RAG compare to fine-tuning in 2026?" → `complex` (0.70)
+
+Both were genuinely promptable, and two new Rules fixed them: a question naming Ayan (or
+he/his/him) is never `tech_web` however much technology it mentions, and `complex` is only
+for questions about Ayan. **Re-run: 29/29, every route passing, no regressions.**
+
+This closes Phase 1's open item 2. The eval had never been run; it took ten minutes and
+caught two real defects, which is the argument for running the other four.
+
+**Still open.** `scripts/router-eval.js` contains `require("dotenv").config()`, which
+violates CLAUDE.md's standing "no dotenv" rule and does nothing — it reports
+`injected env (0)` because `--env-file` has already loaded everything. `dotenv` is not in
+`package.json` either, so it resolves only via a transitive install and would break on a
+clean `npm ci`. One line to delete; left alone because it is outside what was asked.
+
+## Phase 6 deviations from LLD
+
+41. **The 8-route taxonomy (LLD §2, ARCHITECTURE.md's old §4) is superseded by a 6-label
+    graph** — `knowledge`, `stats`, `agent`, `action`, `refusal`, `capabilities` — dropping
+    `about_me`/`complex`/`tech_web`/`book_catchup`/`send_mail`/`list_capabilities` as
+    separate routes. *Why:* three problems the old taxonomy accumulated once real
+    questions and real routing were run against it, not a re-plan done in the abstract.
+    (a) **`about_me`/`complex` never had a real boundary.** The out-of-band router fix on
+    2026-09-16 needed an explicit rule — "`complex` is only for questions about Ayan" —
+    just to keep them apart, and both already run the identical retrieval pipeline
+    underneath (`retrieve()`). There was never a second implementation to justify a second
+    route.
+    (b) **Four near-identical agents were planned** (`tech_web`, `complex`, `book_catchup`,
+    `send_mail`) against a factory (`makeAgentNode`, Phase 5) built to need only one.
+    `tech_web` and `complex`'s tool use collapse into a single bounded `agent` with four
+    tools (`resolve_time`, `metadata_filter`, `semantic_search`, `web_search`);
+    `book_catchup` and `send_mail` were never agents at all once booking stopped needing a
+    live free/busy negotiation — see (c).
+    (c) **Scheduling is delegated to a hosted provider.** A templated scheduling link
+    (Calendly-shaped) replaces `check_free_busy`/`create_event` and the Google Calendar
+    OAuth integration the old Phase 6a gate would have required. There is no calendar tool
+    to isolate or confirm a write against, so the LLD's confirmation-in-state guardrail
+    design for calendar writes does not need building at all — `mail` is the only side
+    effect left, and it was already deterministic.
+    Old Phase 6a/6b/7 (this file's previous revision) are replaced by Phase 7 (router +
+    `knowledge`), Phase 8 (`agent`), Phase 9 (`action`). `pendingConfirmation` is dropped
+    from state (ARCHITECTURE.md §4); a new `agentEscalationUsed` field is added for the
+    `knowledge`→`agent` handoff budget.
+42. **`retrieve()` gained an opt-in `debug` trace** (`options.debug`, surfaced over HTTP
+    behind `MOONMIND_RETRIEVAL_DEBUG`) — not in the LLD, which predates the need to measure
+    the pipeline against a live, if small, corpus. Ids and titles only, per stage: per-arm
+    hits, the RRF-fused order (sorted by `rrf_score` for readability — the raw fusion order
+    is Map insertion order, not a ranking), the post-ranker order, and the post-rerank
+    order. Wired through `about-me.js` -> `state.retrievalDebug` (per-turn reset) ->
+    `toTurn()` -> `POST /chat`'s response as an extra field, never the normal shape;
+    `stats_and_docs` carries it through from the `about_me` half. Deliberately **not**
+    wired into `POST /runs`/`GET /runs/:runId` — `runs.js`'s whole design is a redaction
+    whitelist bounded by `MOONMIND_RUN_RETENTION_DAYS`, and a multi-stage per-arm trace is
+    exactly the kind of thing that whitelist exists to keep out of durable-ish storage.
+    `scripts/retrieval-ab.js` calls `retrieve()` directly with `debug: true` rather than
+    going through HTTP, so it needs no server and no flag flip.
+
+## Phase 6.5 deviations from LLD
+
+43. **A tenth route, `greeting`,** and a `previousRoute` state field — neither in LLD §2
+    or §3. *Why:* `greeting` because answering "Hey" with the seven-item capability menu
+    was a live complaint, twice in one session, and a greeting is not a request for a
+    feature list. `previousRoute` because the LLD's state has no way to express "what the
+    last exchange was about", and without it a refinement like "just the link" is
+    classified against nothing. It is written by `generate` — the one node every branch
+    converges on — and deliberately sits outside `PER_TURN_RESET`, which is what lets it
+    survive into the next turn after `route` itself is cleared. Both fold into the Phase 7
+    taxonomy: `greeting` as a templated route beside `refusal` and `capabilities`.
+44. **The router is given compacted context, not the conversation.** The LLD and
+    ARCHITECTURE §5 both assume "history sent to models capped at N turns" is enough. For
+    the *response* model it is; for the *router* it is actively harmful. Measured: with
+    raw history the live message was 0.9% of the router's input and it returned
+    `refusal@1.00` 3/3; the same message alone returned `about_me@0.80` 2/2. So the router
+    gets its own narrower window (`MOONMIND_ROUTER_HISTORY_MESSAGES`, clamped by the
+    existing cap — a narrowing, not a second mechanism), each earlier message clipped to
+    200 characters, rendered as `role: text` lines, with the message being classified
+    passed separately and last. **The general lesson, and the second time this project has
+    learned it** (see the 2026-09-16 out-of-band entry): when a classifier misbehaves, the
+    input is a likelier culprit than the prompt, and prompt wording could not fix either
+    case.
+
+## Phase 7 deviations from LLD
+
+45. **The taxonomy is seven labels, not the eight of LLD §2 or the six ARCHITECTURE.md
+    carried after Phase 6.** `greeting` (Phase 6.5) makes seven, and `stats` absorbed
+    `stats_and_docs` rather than the mixed case getting a label of its own. *Why:* the LLD
+    has no `greeting` at all — it routed "hey" to `list_capabilities`, which was a live
+    complaint — and its taxonomy never had a slot for the mixed stats+portfolio question
+    the old regex router handled. Deviation 17 created `stats_and_docs` to preserve that;
+    Phase 7 keeps the behaviour and drops the label, which is the trade recorded in
+    Decisions. Net: one label for each thing a visitor can want, and two booleans
+    (`slots.withDocuments`, `slots.action`) for the variations inside two of them.
+46. **Old route names are translated rather than migrated.** The LLD assumes a single
+    taxonomy for the life of the service and says nothing about changing one under live
+    threads. `LEGACY_ROUTE_MAP` translates at read time — in `routeFromState` and on
+    `previousRoute` — instead of rewriting checkpoints, because a checkpoint is LangGraph's
+    serialized state and rewriting it in place would mean owning that format. Read-time
+    translation costs one lookup and has no migration to get wrong. `tech_web` maps to
+    itself, which is the one case where the collapse is deferred rather than applied:
+    Phase 8 replaces that node, and until it does, a legacy web question is better served
+    by the node that works than by the label that is a stub.
+
+## Phase 8 deviations from LLD
+
+47. **`resolve_time` refuses to resolve "since I joined", by design.** The LLD lists it as
+    an example the tool should handle. It cannot, honestly: there is no anchor for it in a
+    date utility, and the real date — TCS, 2023-08-01 — lives in the corpus as
+    `metadata.date_start`. Hardcoding an employment date into a date function would put a
+    fact in two places and rot the moment it changed. The tool returns
+    `{ resolved: false, reason }` telling the model to look the date up with
+    `metadata_filter` or `semantic_search` and use the real one. A wrong range is worse
+    than no range: it silently filters the corpus to the wrong slice, and the answer reads
+    as confident either way.
+48. **The document tools cite by title, not by id.** The LLD's `complex` agent was to
+    "cite the documents and sources used", and ids are the unambiguous handle. But
+    `GENERATE_SYSTEM_PROMPT` has forbidden exposing retrieval machinery since Phase 3b,
+    and a UUID in a visitor-facing answer is exactly that. Titles are what a visitor can
+    recognise and follow up on; the ids stay in the tool artifact, so the node and the run
+    feed still have them. Same information, different audience.

@@ -42,8 +42,8 @@ Lean by default: native `fetch` + `AbortSignal.timeout` (no axios), `node --env-
   what was passed to it.
 - **The email recipient is fixed by config** and is never a tool argument — `send_email`
   has no recipient field in its schema.
-- **Calendar writes need a code-enforced confirmation** recorded in state on a prior turn.
-  The tool refuses without it.
+- **The `action` node has no calendar tool and no agent.** `book` returns a templated,
+  hosted scheduling link; `mail` sends deterministically. Both branch inside one node.
 - Every outbound call has a timeout; retries live only in that outbound layer.
 - Every node is wrapped by the error boundary — the API never 500s because a node threw.
 

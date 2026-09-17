@@ -93,7 +93,23 @@ jobs:
               echo "VM_APP_DIR secret is not set - refusing to guess a deploy path" >&2
               exit 1
             fi
-            cd "${VM_APP_DIR}"
+            # Strip stray whitespace/newlines pasted into the secret, and
+            # expand a leading ~ (quoted expansion would not).
+            APP_DIR="$(printf '%s' "${VM_APP_DIR}" | tr -d '[:space:]')"
+            case "$APP_DIR" in
+              "~"|"~/"*) APP_DIR="$HOME/${APP_DIR#\~/}" ;;
+            esac
+            if [ ! -d "$APP_DIR" ]; then
+              echo "Deploy dir does not exist for user '$(whoami)' (home: $HOME)" >&2
+              echo "Entries in \$HOME:" >&2
+              ls -1 "$HOME" >&2
+              exit 1
+            fi
+            cd "$APP_DIR"
+            if [ ! -f docker-compose.yml ] && [ ! -f compose.yml ]; then
+              echo "No compose file in the deploy dir - bootstrap it first" >&2
+              exit 1
+            fi
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
             docker compose pull
             docker compose up -d

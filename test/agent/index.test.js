@@ -85,13 +85,13 @@ test("runTurn keys the thread on sessionId and bounds the run", async () => {
 
 test("runTurn reports a node failure recorded by the error boundary", async () => {
   const graph = fakeGraph({
-    error: { node: "about_me", message: "boom" },
+    error: { node: "knowledge", message: "boom" },
     finalAnswer: "graceful message",
   });
 
   const turn = await runTurn({ sessionId: "abc", message: "hi" }, { graph });
 
-  assert.deepEqual(turn.error, { node: "about_me", message: "boom" });
+  assert.deepEqual(turn.error, { node: "knowledge", message: "boom" });
   assert.equal(turn.answer, "graceful message");
 });
 
@@ -108,16 +108,32 @@ test("the production node set covers router, generate and every route", () => {
 test("only the phases still to come are stubbed", () => {
   const live = ROUTES.filter((route) => !STUBBED_ROUTES.includes(route));
 
-  // Phase 1: refusal + list_capabilities. Phase 2: the two stats routes.
-  // Phase 3b: about_me. Phase 5: tech_web. Update as each later phase lands — this is
-  // the tripwire for a forgotten stub.
+  // Phase 1: refusal + capabilities. Phase 2: stats. Phase 3b: knowledge (then
+  // `about_me`). Phase 6.5: greeting. Phase 8: agent. Phase 9 takes `action` off this
+  // list — this is the tripwire for a forgotten stub.
   assert.deepEqual(live.sort(), [
-    "about_me",
-    "list_capabilities",
+    "agent",
+    "capabilities",
+    "greeting",
+    "knowledge",
     "refusal",
     "stats",
-    "stats_and_docs",
-    "tech_web",
   ]);
-  assert.deepEqual([...STUBBED_ROUTES].sort(), ["book_catchup", "complex", "send_mail"]);
+  assert.deepEqual([...STUBBED_ROUTES].sort(), ["action"]);
+});
+
+test("the legacy tech_web label resolves to the same node as agent", () => {
+  const nodes = createNodes();
+
+  // Phase 8 pointed both at one node rather than keeping the Phase 5 single-tool one
+  // alive, so a pre-Phase-7 thread replaying `tech_web` gets the four-tool agent.
+  assert.equal(typeof nodes.tech_web, "function");
+  assert.equal(nodes.tech_web, nodes.agent, "same function, two names — nothing duplicated");
+  assert.ok(!ROUTES.includes("tech_web"), "not a route any more");
+  assert.deepEqual(nodes.agent.toolNames, [
+    "resolve_time",
+    "metadata_filter",
+    "semantic_search",
+    "web_search",
+  ]);
 });

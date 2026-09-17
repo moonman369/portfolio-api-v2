@@ -15,7 +15,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { HumanMessage, AIMessage } = require("@langchain/core/messages");
 
-const { createAboutMeNode, resolveQuery } = require("../../src/agent/nodes/about-me");
+const { createKnowledgeNode, resolveQuery } = require("../../src/agent/nodes/knowledge");
 const { createGenerateNode, buildContextBlocks } = require("../../src/agent/nodes/generate");
 
 const CONFIG = Object.freeze({
@@ -68,23 +68,24 @@ const state = (overrides = {}) => ({
 
 test("writes documents and nothing else", async () => {
   const retrieve = fakeRetrieve();
-  const result = await createAboutMeNode(nodeDeps(retrieve))(state());
+  const result = await createKnowledgeNode(nodeDeps(retrieve))(state());
 
-  assert.deepEqual(Object.keys(result), ["documents"]);
+  assert.deepEqual(Object.keys(result), ["documents", "retrievalDebug"]);
   assert.deepEqual(result.documents.map((d) => d.id), ["a", "b"]);
+  assert.equal(result.retrievalDebug, null, "off unless MOONMIND_RETRIEVAL_DEBUG is on");
   assert.equal(result.finalAnswer, undefined, "generate owns the answer");
 });
 
 test("retrieves against the turn's query", async () => {
   const retrieve = fakeRetrieve();
-  await createAboutMeNode(nodeDeps(retrieve))(state());
+  await createKnowledgeNode(nodeDeps(retrieve))(state());
 
   assert.equal(retrieve.calls[0].query, "what projects has he built?");
 });
 
 test("falls back to the last message when rawQuery is missing", async () => {
   const retrieve = fakeRetrieve();
-  await createAboutMeNode(nodeDeps(retrieve))(
+  await createKnowledgeNode(nodeDeps(retrieve))(
     state({ rawQuery: "", messages: [new HumanMessage("tell me about his certifications")] }),
   );
 
@@ -93,7 +94,7 @@ test("falls back to the last message when rawQuery is missing", async () => {
 
 test("an empty query skips retrieval instead of searching for nothing", async () => {
   const retrieve = fakeRetrieve();
-  const result = await createAboutMeNode(nodeDeps(retrieve))(
+  const result = await createKnowledgeNode(nodeDeps(retrieve))(
     state({ rawQuery: "", messages: [] }),
   );
 
@@ -103,14 +104,14 @@ test("an empty query skips retrieval instead of searching for nothing", async ()
 
 test("passes the injected models through to retrieval", async () => {
   const retrieve = fakeRetrieve();
-  await createAboutMeNode(nodeDeps(retrieve))(state());
+  await createKnowledgeNode(nodeDeps(retrieve))(state());
 
   assert.deepEqual(retrieve.calls[0].options.models, { intent: "fake-intent" });
 });
 
 test("an empty result set is a valid answer, not an error", async () => {
   const retrieve = fakeRetrieve({ documents: [] });
-  const result = await createAboutMeNode(nodeDeps(retrieve))(state());
+  const result = await createKnowledgeNode(nodeDeps(retrieve))(state());
 
   assert.deepEqual(result.documents, []);
 });
@@ -121,7 +122,7 @@ test("a degraded arm still returns the documents that were found", async () => {
     failedArms: [{ source: "semantic", message: "atlas down" }],
   });
 
-  const result = await createAboutMeNode(nodeDeps(retrieve))(state());
+  const result = await createKnowledgeNode(nodeDeps(retrieve))(state());
   assert.deepEqual(result.documents.map((d) => d.id), ["a"]);
 });
 
@@ -131,7 +132,7 @@ test("a retrieval failure propagates, so the error boundary can catch it", async
   };
 
   await assert.rejects(
-    () => createAboutMeNode(nodeDeps(retrieve))(state()),
+    () => createKnowledgeNode(nodeDeps(retrieve))(state()),
     /retrieval exploded/,
   );
 });
@@ -253,4 +254,22 @@ test("buildContextBlocks always leads with the date", () => {
   const blocks = buildContextBlocks({ documents: [], statsPayload: null });
 
   assert.match(blocks[0], /today's date/);
+});
+
+test("generate records this turn's route for the next turn's router", async () => {
+  // `route` is cleared by PER_TURN_RESET before the router runs, so the only way it can
+  // know what the last exchange was about is if generate carries it across.
+  const model = { invoke: async () => ({ content: "An answer." }) };
+
+  const synthesized = await createGenerateNode({ model, config: CONFIG })(
+    state({ route: "knowledge", documents: [doc("a")] }),
+  );
+  assert.equal(synthesized.previousRoute, "knowledge");
+
+  // The pass-through path too: templated and agentic branches answer without a model,
+  // and they are exactly the routes a follow-up is most likely to arrive after.
+  const passedThrough = await createGenerateNode({ model, config: CONFIG })(
+    state({ route: "tech_web", finalAnswer: "already answered" }),
+  );
+  assert.equal(passedThrough.previousRoute, "tech_web");
 });

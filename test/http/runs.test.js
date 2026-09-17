@@ -69,6 +69,7 @@ const finishedRun = (overrides = {}) => ({
   route: "stats",
   answer: "106 repositories.",
   error: null,
+  documents: [{ id: "a", title: "A doc", content_full: "body", summary_for_embedding: "keyword soup" }],
   documentIds: ["a"],
   documentCount: 1,
   startedAt: new Date("2026-09-13T10:00:00Z"),
@@ -245,7 +246,9 @@ test("a finished run reports its answer and document ids, not its documents", as
       assert.deepEqual(data.documentIds, ["a"]);
       assert.equal(data.documentCount, 1);
       assert.equal(data.nextSince, 5);
-      assert.ok(!("documents" in data), "full documents belong to /chat, not the feed");
+      assert.deepEqual(data.documents, [
+        { id: "a", title: "A doc", content_full: "body" },
+      ], "the feed returns documents in the same shape /chat does");
     });
   } finally {
     restore();

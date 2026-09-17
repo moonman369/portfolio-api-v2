@@ -1,9 +1,9 @@
 "use strict";
 
 /**
- * about_me answers, old pipeline vs new, recorded side by side.
+ * knowledge answers, old pipeline vs new, recorded side by side.
  *
- * Asks both services the same ten questions and writes `docs/evals/about_me.md`: each
+ * Asks both services the same ten questions and writes `docs/evals/knowledge-eval.md`: each
  * answer in full, plus the overlap between the document ids each pipeline retrieved.
  *
  * Retrieved-id overlap is the objective signal — two answers can read differently and
@@ -11,8 +11,8 @@
  * here. The prose itself needs a human read; the file is laid out for that.
  *
  * Usage:
- *   node --env-file=.env scripts/about-me-eval.js --old https://old --new https://new
- *   node --env-file=.env scripts/about-me-eval.js --new https://new        # new only
+ *   node --env-file=.env scripts/knowledge-eval.js --old https://old --new https://new
+ *   node --env-file=.env scripts/knowledge-eval.js --new https://new        # new only
  *
  * Passwords come from the environment, never a flag: MOONMIND_PASSWORD for the new
  * service, OLD_MOONMIND_PASSWORD for the old one (defaults to the same value).
@@ -24,33 +24,33 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const TIMEOUT_MS = 180_000;
-const OUTPUT_PATH = path.join(__dirname, "..", "docs", "evals", "about_me.md");
+const OUTPUT_PATH = path.join(__dirname, "..", "docs", "evals", "knowledge-eval.md");
 
 const QUESTIONS = Object.freeze([
-  { id: 1, text: "What backend technologies does Ayan work with?", route: "about_me" },
-  { id: 2, text: "Tell me about Ayan's experience at Tata Consultancy Services.", route: "about_me" },
-  { id: 3, text: "What certifications does he hold?", route: "about_me" },
-  { id: 4, text: "What projects has he built involving RAG or vector search?", route: "about_me" },
-  { id: 5, text: "What is his educational background?", route: "about_me" },
-  { id: 6, text: "What are his hobbies and interests outside work?", route: "about_me" },
-  { id: 7, text: "How has he used generative AI in his day-to-day engineering work?", route: "about_me" },
+  { id: 1, text: "What backend technologies does Ayan work with?", route: "knowledge" },
+  { id: 2, text: "Tell me about Ayan's experience at Tata Consultancy Services.", route: "knowledge" },
+  { id: 3, text: "What certifications does he hold?", route: "knowledge" },
+  { id: 4, text: "What projects has he built involving RAG or vector search?", route: "knowledge" },
+  { id: 5, text: "What is his educational background?", route: "knowledge" },
+  { id: 6, text: "What are his hobbies and interests outside work?", route: "knowledge" },
+  { id: 7, text: "How has he used generative AI in his day-to-day engineering work?", route: "knowledge" },
   {
     id: 8,
     text: "What are his strongest skills, and which projects demonstrate them?",
-    route: "about_me",
+    route: "knowledge",
     note: "multi-part - exercises decomposition when MOONMIND_DECOMPOSE_ENABLED is on",
   },
   {
     id: 9,
     text: "Has Ayan ever worked on underwater basket weaving?",
-    route: "about_me",
+    route: "knowledge",
     expectEmpty: true,
     note: "nothing should match - the answer must stay helpful and say so, never a bare refusal",
   },
   {
     id: 10,
     text: "Show me my github stats and my projects",
-    route: "stats_and_docs",
+    route: "stats",
     note: "the mixed query the old regex router handled",
   },
 ]);
@@ -74,7 +74,7 @@ async function ask(baseUrl, password, message) {
     headers: { "Content-Type": "application/json", Accept: "application/json", password },
     // `prompt` is what the old route reads; the new one accepts it as an alias, so one
     // body shape serves both.
-    body: JSON.stringify({ prompt: message, message, sessionId: `about-me-eval-${Date.now()}` }),
+    body: JSON.stringify({ prompt: message, message, sessionId: `knowledge-eval-${Date.now()}` }),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
 
@@ -147,7 +147,7 @@ function render({ args, rows }) {
   const comparable = rows.filter((row) => row.oldIds.length > 0).length;
 
   return [
-    "# about_me eval — old pipeline vs new",
+    "# knowledge eval — old pipeline vs new",
     "",
     `Generated: ${new Date().toISOString()}`,
     `Old: ${args.old ? trimSlash(args.old) : "_not run_"}`,
@@ -219,6 +219,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(`about-me-eval failed: ${error.message}`);
+  console.error(`knowledge-eval failed: ${error.message}`);
   process.exit(1);
 });
