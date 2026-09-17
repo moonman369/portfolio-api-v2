@@ -39,7 +39,7 @@ src/
     models.js            # getModel(role)
     prompts.js           # every system prompt
     tools.js             # every tool + TOOLSETS map
-    nodes/               # router.js, simple.js, stats.js, about-me.js, agents.js, generate.js
+    nodes/               # router.js, simple.js, stats.js, knowledge.js, agents.js, generate.js
 public/                  # run-viewer.html — the only static asset (see below)
 scripts/                 # parity-check, evals, oauth, one-off migrations
 test/                    # node:test, mirrors src/
@@ -160,28 +160,41 @@ Rules that keep it that way:
 
 ```
 guard (non-LLM: length cap, rate limit, auth)  [existing http-layer checks, unchanged]
-  → router  (6 labels)
+  → router  (7 labels)
+      ├── greeting     → templated, no LLM call
       ├── knowledge    → retrieval (RRF pipeline) → generate
-      ├── stats        → direct dispatch → generate
+      ├── stats        → direct dispatch, + retrieval when slots.withDocuments → generate
       ├── agent        → ONE bounded agent (4 tools) → generate
-      ├── action       → sub-branch inside the node: 'book' | 'mail'
+      ├── action       → sub-branch inside the node: slots.action 'book' | 'mail'
       ├── refusal      → templated, no LLM call
-      ├── capabilities → templated, no LLM call
-      └── greeting     → templated, no LLM call
+      └── capabilities → templated, no LLM call
 ```
 
 - `about_me` and `complex` merge into **`knowledge`** — the boundary between them was
-  never real.
+  never real. Trend and comparison questions about Ayan are answered from retrieval alone
+  until Phase 9 adds the escalation.
 - `tech_web` and `complex`'s tool use merge into **`agent`**: one `makeAgentNode` call,
-  four tools (`resolve_time`, `metadata_filter`, `semantic_search`, `web_search`).
+  four tools (`resolve_time`, `metadata_filter`, `semantic_search`, `web_search`). Built
+  in Phase 8. `resolve_time` is deterministic; the two document tools are thin wrappers
+  over `retrieval/`'s existing arms, not copies of them. `TOOLSETS.agent` is the only
+  entry in the map — `action` is deliberately not an agent, so nothing else can act.
 - `book_catchup` and `send_mail` merge into **`action`**, branching internally on
   `slots.action`. Booking is a templated scheduling link from a hosted provider; mail is
   deterministic. Neither is an agent — no calendar tool, no confirmation step.
+- `stats_and_docs` merges into **`stats`**, branching internally on
+  `slots.withDocuments` — the same shape as `action`, decided at the Phase 7 gate. A pure
+  numbers question skips retrieval; a mixed one composes both halves. The label is
+  narrower than what the node does, which was the accepted cost of not keeping an eighth
+  label.
 - Escalation: `knowledge` may hand off to `agent` **once per turn**, budget enforced in
   state. No other node escalates; `agent` never escalates back.
 - **`greeting`** is templated alongside `refusal` and `capabilities` (added Phase 6.5).
   "Hey" is a greeting, not a request for the feature list — answering it with the
   capability menu was a live bug. `capabilities` stays for the explicit ask.
+- **Legacy names** written by the pre-Phase-7 taxonomy are translated by
+  `LEGACY_ROUTE_MAP` (`state.js`) wherever a checkpointed thread can surface one —
+  `routeFromState`, and `previousRoute` in the router. Unknown and unmapped still falls to
+  `refusal`.
 
 **Conversation context.** The router classifies the latest message against a compacted
 block of the recent conversation plus `previousRoute`, not against raw history. Raw
@@ -241,10 +254,28 @@ models capped at N turns, with `summary` populated only once history exceeds tha
   templated, hosted scheduling link. There is no confirmation step to guard.
 - Tool isolation is by what `TOOLSETS` binds, never by asking a model not to use something.
 
-**Sticky active flow.** `activeFlow` remains in state for any node that spans turns. The
-old `book_catchup`/`send_mail` design used it for multi-turn slot-filling; `action`'s
-`book` and `mail` branches are now single-turn and deterministic, so whether either still
-needs stickiness is a Phase 9 decision, not assumed here.
+**Holding a conversation in place — one precedence order.** Two mechanisms can keep a turn
+where the last one was: Phase 6.5's previous-route inheritance and `activeFlow` stickiness.
+Phase 7 reconciled them, and this is the order:
+
+1. **`error`** — the boundary already wrote a graceful answer; run no branch at all.
+2. **Cancel.** `slots.cancelsActiveFlow` ends the flow *and* blocks inheritance. "Never
+   mind" is the user ruling out precisely the thing both mechanisms would otherwise do,
+   so it beats both. Enforced in two places: `applyConfidenceFloor` (router) and
+   `routeFromState` (graph).
+3. **`activeFlow`** — a genuinely in-progress multi-turn task outranks inheritance: it
+   means a node is waiting on an answer, not merely that the last turn went somewhere.
+   Broken only by a classification into a different route at or above
+   `MOONMIND_TOPIC_CHANGE_CONFIDENCE`.
+4. **Inheritance** — applied in the router, and only below `MOONMIND_ROUTER_MIN_CONFIDENCE`,
+   so it never overrides a classification the model is sure of. Never inherits a route
+   that refuses or acts (`INHERITABLE_ROUTES`).
+5. **The router's classification.**
+6. **`refusal`** — unknown and unmapped.
+
+**`activeFlow` is dormant.** Nothing sets it today, so step 3 never fires and the live
+order is 1, 2, 4, 5, 6. The field and its stickiness are kept because Phase 9's mail flow
+is the first thing that will set it; whether `book` needs it too is a Phase 9 decision.
 
 **Testable offline.** `buildGraph` takes injected nodes and dependencies, so `test/agent/`
 exercises the whole graph with fake models and fake services — no network, no keys.

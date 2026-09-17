@@ -22,7 +22,7 @@ async function listCapabilities() {
 
 /**
  * A greeting, and one line inviting a question. Not the capability menu — that is
- * `list_capabilities`, and answering "Hey" with it is the bug this node exists to fix.
+ * `capabilities`, and answering "Hey" with it is the bug this node exists to fix.
  *
  * The conversation length picks which greeting, so a second "hey" in a session reads
  * differently without the answer becoming non-deterministic.

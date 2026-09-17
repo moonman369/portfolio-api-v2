@@ -3,7 +3,7 @@
 // `retrieve()` — the single entry point into retrieval.
 //
 // decompose -> per-sub-query (plan -> search arms -> RRF) -> union -> rank -> rerank.
-// Phase 3b's about_me node calls this; Phase 7's semantic_search and metadata_filter
+// The knowledge node calls this; Phase 8's semantic_search and metadata_filter
 // tools call the same function, not copies of it.
 //
 // Models are injected by the caller (see the note in rank.js): agent/ sits above

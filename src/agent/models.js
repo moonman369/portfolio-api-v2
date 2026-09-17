@@ -27,7 +27,7 @@ function createModel(role) {
     timeout: openai.timeoutMs,
     configuration: { baseURL: openai.baseUrl },
     // LangChain's own tracing: every prompt and every completion, in full. Separate from
-    // MOONMIND_DEBUG because the volume is on a different scale — a single about_me turn
+    // MOONMIND_DEBUG because the volume is on a different scale — a single knowledge turn
     // prints ten documents' worth of context. Reach for it when the node trace has shown
     // you *which* step misbehaved and you need to see what the model was actually asked.
     verbose: moonmind.debugModels,

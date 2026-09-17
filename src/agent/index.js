@@ -16,14 +16,15 @@ const runs = require("./runs");
 const { createRouterNode } = require("./nodes/router");
 const { createGenerateNode } = require("./nodes/generate");
 const { createStatsNode, createStatsAndDocsNode } = require("./nodes/stats");
-const { createAboutMeNode } = require("./nodes/about-me");
+const { createKnowledgeNode } = require("./nodes/knowledge");
 const { makeAgentNode } = require("./nodes/agents");
 const { TOOLSETS } = require("./tools");
-const { TECH_WEB_SYSTEM_PROMPT } = require("./prompts");
+const { AGENT_SYSTEM_PROMPT } = require("./prompts");
 const { refusal, listCapabilities, greeting, makeStubNode } = require("./nodes/simple");
 
-// Routes whose real implementation lands in a later phase (6b, 7).
-const STUBBED_ROUTES = Object.freeze(["complex", "book_catchup", "send_mail"]);
+// Routes whose real implementation lands in a later phase: `action` in Phase 9
+// (book | mail).
+const STUBBED_ROUTES = Object.freeze(["action"]);
 
 /** The production node set. Tests build their own and pass it straight to buildGraph. */
 function createNodes() {
@@ -31,7 +32,7 @@ function createNodes() {
     router: createRouterNode(),
     generate: createGenerateNode(),
     refusal,
-    list_capabilities: listCapabilities,
+    capabilities: listCapabilities,
     greeting,
   };
 
@@ -39,26 +40,31 @@ function createNodes() {
     nodes[route] = makeStubNode(route);
   });
 
-  // The only agent so far. `TOOLSETS.tech_web` is the whole of what it can do — there is
-  // no second place to look, and no prompt that widens it.
-  nodes.tech_web = makeAgentNode({
-    name: "tech_web",
-    toolset: TOOLSETS.tech_web,
-    prompt: TECH_WEB_SYSTEM_PROMPT,
+  // The one agent. `TOOLSETS.agent` is the whole of what it can do — there is no second
+  // place to look, and no prompt that widens it.
+  nodes.agent = makeAgentNode({
+    name: "agent",
+    toolset: TOOLSETS.agent,
+    prompt: AGENT_SYSTEM_PROMPT,
     sourcesField: "searchResults",
-    // Classify before searching. The router already sends off-topic questions to
-    // `refusal`, but it decides which branch answers, not whether a question that
-    // reached this one is worth a web search — "which coin should I buy" is a plausible
-    // industry question as far as it is concerned.
+    // Classify before dispatching a tool. The router already sends off-topic questions to
+    // `refusal`, but it decides which branch answers, not whether a question that reached
+    // this one is worth researching — "which coin should I buy" is a plausible industry
+    // question as far as it is concerned.
     scopeGuard: true,
   });
 
-  // stats_and_docs composes the other two rather than reimplementing either.
-  nodes.about_me = createAboutMeNode();
-  nodes.stats = createStatsNode();
-  nodes.stats_and_docs = createStatsAndDocsNode({
-    statsNode: nodes.stats,
-    aboutMeNode: nodes.about_me,
+  // The legacy `tech_web` label (state.js LEGACY_NODES) now points at the same node, so a
+  // pre-Phase-7 thread replaying it gets the four-tool agent rather than the single-tool
+  // one Phase 5 built. Same function, two names — nothing is duplicated.
+  nodes.tech_web = nodes.agent;
+
+  // `stats` composes the other two when `slots.withDocuments` is set, and runs the
+  // numbers alone otherwise — one label, two shapes.
+  nodes.knowledge = createKnowledgeNode();
+  nodes.stats = createStatsAndDocsNode({
+    statsNode: createStatsNode(),
+    knowledgeNode: nodes.knowledge,
   });
 
   return nodes;
@@ -117,6 +123,10 @@ function toTurn({ sessionId, runId, state }) {
     routeConfidence: result.routeConfidence ?? 0,
     answer: result.finalAnswer ?? null,
     documents: result.documents ?? [],
+    // The agent's sources — web results and document references. Written by every agent
+    // node since Phase 5, but never surfaced here until Phase 8 went looking for them and
+    // found every caller reporting zero.
+    searchResults: result.searchResults ?? [],
     statsPayload: result.statsPayload ?? null,
     retrievalDebug: result.retrievalDebug ?? null,
     error: result.error ?? null,
@@ -129,7 +139,7 @@ function toTurn({ sessionId, runId, state }) {
  * @param {{ sessionId: string, message: string }} turn
  * @param {{ graph?: object }} [deps] Injected compiled graph, for tests and evals.
  * @returns {Promise<{sessionId, runId, route, routeConfidence, answer, documents,
- *   statsPayload, retrievalDebug, error}>}
+ *   searchResults, statsPayload, retrievalDebug, error}>}
  */
 async function runTurn({ sessionId, message }, deps = {}) {
   const graph = deps.graph ?? (await getCompiledGraph());
@@ -162,7 +172,7 @@ async function runTurn({ sessionId, message }, deps = {}) {
  *
  *   - `event.name === langgraph_node` is the node boundary itself;
  *   - `<node>.<something>` is a sub-step whose author named it, on purpose, to be
- *     watchable — `about_me.retrieve` is the first of them. Naming a runnable is how a
+ *     watchable — `knowledge.retrieve` is the first of them. Naming a runnable is how a
  *     node opts into the feed;
  *   - anything else is an anonymous inner runnable (`RunnableSequence`, `RunnableLambda`)
  *     and is dropped, or the feed would be unreadable.
@@ -279,7 +289,7 @@ async function* streamTurn({ sessionId, message, runId }, deps = {}) {
     if (event.event === "on_chain_start") {
       yield step(label, "start", "");
     } else if (event.event === "on_chain_end") {
-      // A sub-step's output is whatever that runnable returns — for `about_me.prepare`
+      // A sub-step's output is whatever that runnable returns — for `knowledge.prepare`
       // that includes the resolved config, API keys and all. `summarizeUpdate` is a
       // whitelist rather than a serializer precisely so this stays safe: a shape it
       // does not recognise summarizes to nothing.
