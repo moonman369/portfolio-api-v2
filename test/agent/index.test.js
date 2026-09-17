@@ -109,17 +109,31 @@ test("only the phases still to come are stubbed", () => {
   const live = ROUTES.filter((route) => !STUBBED_ROUTES.includes(route));
 
   // Phase 1: refusal + capabilities. Phase 2: stats. Phase 3b: knowledge (then
-  // `about_me`). Phase 6.5: greeting. Phase 8 takes `agent` off this list, Phase 9
-  // `action` — this is the tripwire for a forgotten stub.
-  assert.deepEqual(live.sort(), ["capabilities", "greeting", "knowledge", "refusal", "stats"]);
-  assert.deepEqual([...STUBBED_ROUTES].sort(), ["action", "agent"]);
+  // `about_me`). Phase 6.5: greeting. Phase 8: agent. Phase 9 takes `action` off this
+  // list — this is the tripwire for a forgotten stub.
+  assert.deepEqual(live.sort(), [
+    "agent",
+    "capabilities",
+    "greeting",
+    "knowledge",
+    "refusal",
+    "stats",
+  ]);
+  assert.deepEqual([...STUBBED_ROUTES].sort(), ["action"]);
 });
 
-test("the legacy tech_web node is still wired, with no label pointing at it", () => {
+test("the legacy tech_web label resolves to the same node as agent", () => {
   const nodes = createNodes();
 
-  // Phase 8 replaces it with the four-tool `agent`. Until then a pre-Phase-7 thread that
-  // replays `tech_web` gets a real web answer rather than the `agent` stub.
+  // Phase 8 pointed both at one node rather than keeping the Phase 5 single-tool one
+  // alive, so a pre-Phase-7 thread replaying `tech_web` gets the four-tool agent.
   assert.equal(typeof nodes.tech_web, "function");
+  assert.equal(nodes.tech_web, nodes.agent, "same function, two names — nothing duplicated");
   assert.ok(!ROUTES.includes("tech_web"), "not a route any more");
+  assert.deepEqual(nodes.agent.toolNames, [
+    "resolve_time",
+    "metadata_filter",
+    "semantic_search",
+    "web_search",
+  ]);
 });

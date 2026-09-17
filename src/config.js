@@ -145,7 +145,14 @@ const envSchema = z.object({
   // Capped by MOONMIND_HISTORY_MAX_MESSAGES at use, so this can only ever narrow.
   MOONMIND_ROUTER_HISTORY_MESSAGES: positiveInt.default(6),
   MOONMIND_RUN_TIMEOUT_MS: positiveInt.default(120_000),
-  MOONMIND_AGENT_MAX_STEPS: positiveInt.max(20).default(4),
+  // Raised from 4 in Phase 8: the agent went from one tool to four, and a question like
+  // "backend skills 2023 vs now" legitimately spends a call resolving the dates and one
+  // per search before the call that writes the answer. Four truncated those.
+  MOONMIND_AGENT_MAX_STEPS: positiveInt.max(20).default(6),
+  // IANA zone for `resolve_time`. "Last year" is a different range either side of a date
+  // line, and the visitor's question is about Ayan's timeline, so this is his zone rather
+  // than the server's — a container in UTC must not shift what "this year" means.
+  MOONMIND_TIMEZONE: nonEmpty.default("Asia/Kolkata"),
   // The scope guard: one cheap classification before an agent dispatches any tool.
   // The topic list lives in `agent/prompts.js` (EXCLUDED_TOPICS); this appends to it, so
   // the VM can gain a topic by editing .env instead of waiting for a build.
@@ -298,6 +305,7 @@ function loadConfig(env) {
       // How many model calls one agent node gets per run. Each tool-calling round is
       // one, so this bounds both cost and latency for `tech_web` and every agent after.
       agentMaxSteps: raw.MOONMIND_AGENT_MAX_STEPS,
+      timezone: raw.MOONMIND_TIMEZONE,
       debug: raw.MOONMIND_DEBUG,
       debugModels: raw.MOONMIND_DEBUG_MODELS,
       scopeGuardEnabled: raw.MOONMIND_SCOPE_GUARD_ENABLED,

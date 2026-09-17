@@ -188,7 +188,12 @@ multi-turn fixture passes on the new labels; an offline test replays every legac
 value; the Phase 3b set routes through `knowledge`; the trend question is recorded in
 `docs/evals/knowledge.md` as Phase 9's baseline.
 
-### `[ ]` Phase 8 — `agent` node (one bounded agent, four tools)
+### `[x]` Phase 8 — `agent` node (one bounded agent, four tools)
+*Built and verified live. **One finding worth carrying into Phase 9:** the three portfolio
+questions this phase was asked to record all route to `knowledge`, not `agent` — Phase 7's
+taxonomy says questions about Ayan are never `agent`. The tools work; nothing sends those
+questions to them until Phase 9's escalation. Recorded in `docs/evals/agent.md` §2 by
+invoking the node directly.*
 **Scope:** `TOOLSETS.agent = [resolve_time, metadata_filter, semantic_search, web_search]`
 — `tech_web`'s `web_search` plus a deterministic `resolve_time` tool (no LLM; turns
 "2023", "now", "last year", "since I joined" into date ranges relative to the current
@@ -987,6 +992,95 @@ the instruction was right and the stated mechanism was not.
    `retrieval-parity`, Phase 3b's `knowledge-eval` (renamed this phase), Phase 4's two live
    re-checks, Phase 5's live Tavily check, and Phase 6.5's open question on the retrieval
    gate (`MOONMIND_MIN_SEMANTIC_SCORE` is still 0, so `k` is fixed at 15).
+
+---
+
+### Phase 8 — Unified agent — 2026-09-17
+
+**Shipped.** Three new tools and one agent bound with four, replacing Phase 5's
+single-tool `tech_web`. `makeAgentNode` reused unchanged, as asked. 375 offline tests pass
+(20 new). `docs/evals/agent.md` records both suites live.
+
+**The finding that matters most.** The three questions the brief names — "backend skills
+2023 vs now", "how has Ayan upskilled in AI", "AI projects + market relevance today" — are
+all **about Ayan**, and Phase 7's router sends those to `knowledge`, never `agent`
+("never agent, however much technology it mentions"). Measured: all three classify
+`knowledge` at 0.90. So the tools are built and work, but **nothing routes to them for a
+portfolio question until Phase 9's escalation lands**. Rather than bend the router — that
+would undo a Phase 7 decision recorded in ARCHITECTURE.md — the eval invokes the node
+directly for those three and prints the routes alongside, so the gap reads as a gap.
+
+**Two live defects found and fixed while evaluating.**
+1. **The agent stopped searching, and invented URLs instead.** The first eval run had all
+   five tech questions calling `web_search` zero times while printing 3-4 links each —
+   fabricated from training memory. My first prompt draft said to search "only when the
+   answer depends on something current", which gpt-4o-mini read as permission to skip.
+   Fixed by making it unconditional for non-Ayan questions ("you have no reliable
+   knowledge of what is current") plus an explicit rule that every URL must have come back
+   from a search in that conversation. Re-run: 5 web sources on every question, and a
+   check across all five answers found **zero cited URLs that no tool returned**.
+2. **`toTurn` never surfaced `searchResults`.** Written by every agent node since Phase 5,
+   but absent from the turn summary, so every caller — `/chat`, the evals — saw zero
+   sources for agent answers. Found because the eval reported `sources=0` while the server
+   log showed a successful search. One line; it has been wrong since Phase 5.
+
+**Files.**
+- `src/agent/tools.js` — `resolveTimeExpression` (pure), and the `resolve_time`,
+  `semantic_search` and `metadata_filter` tools. The document tools call `searchAllArms`,
+  the same function `retrieve()` uses, differing only in the plan they hand it; nothing
+  re-implements a query, a projection or the fusion. Rendering goes through
+  `sanitizeForPrompt`, so `impact_score` and `summary_for_embedding` cannot reach the
+  model from a tool either. `TOOLSETS.tech_web` deleted; `TOOLSETS.agent` is the only entry.
+- `src/agent/prompts.js` — `TECH_WEB_SYSTEM_PROMPT` → `AGENT_SYSTEM_PROMPT`: which tool
+  for which question, document tools preferred for anything about Ayan, citation rules for
+  both kinds of source, and the two-period rule for comparisons.
+- `src/agent/index.js` — `nodes.agent` built from the factory; `nodes.tech_web` points at
+  the same function so a legacy thread gets the four-tool agent; `searchResults` added to
+  `toTurn`; `STUBBED_ROUTES` down to `action`.
+- `src/config.js`, `.env.example` — `MOONMIND_TIMEZONE`; `MOONMIND_AGENT_MAX_STEPS`
+  default 4 → 6.
+- `scripts/agent-eval.js`, `docs/evals/agent.md` (both new).
+- `test/agent/tools.test.js` (new, 20 tests); `agents.test.js` and `index.test.js` updated.
+
+**Env vars.** One added, one default changed. Total 83. `MOONMIND_TIMEZONE`
+(`Asia/Kolkata`) — Ayan's zone, not the server's, because "last year" must not change
+meaning because a container runs in UTC. `MOONMIND_AGENT_MAX_STEPS` 4 → 6: with four tools
+a two-period comparison legitimately spends a call resolving dates and one per search
+before the call that writes the answer, and 4 truncated those.
+
+**Verified live.**
+- Five tech questions through the whole graph: all route `agent`, all return 5-15 web
+  sources, no invented URLs.
+- Three portfolio questions on the node directly: "2023 vs now" called `metadata_filter`
+  **twice**, once per period (`dates 2023-01-01..2023-12-31` and `dates 2026-09-17..`),
+  which is the two-period rule working; the other two chose `semantic_search`. **None of
+  the three used `web_search`** — the document-tool preference holds.
+- Run feed: `agent | tool | web_search -> 5 results`, alongside `agent.scope_check`.
+- Certificate links surfaced from document `external_links` in a portfolio answer, which
+  is the Phase 6.5 sanitizer behaviour still working through a tool.
+
+**Deviations.** Two, recorded below (47-48).
+
+**Open items.**
+1. **Phase 9 must close the routing gap.** Until the `knowledge` → `agent` escalation
+   exists, the document tools are only reachable by calling the node directly.
+   `docs/evals/agent.md` §2 is the baseline for what the escalation should produce.
+2. **`searchResults` is in `toTurn` but not in the HTTP response.** `/chat` returns
+   `documents` but not the agent's sources, so a frontend rendering an agent answer has
+   its citations only as markdown inside the prose. Adding it is a response-shape change
+   and belongs with Phase 11's cutover, next to `docs/FRONTEND_INTEGRATION.md`.
+3. **`MOONMIND_AGENT_MODEL` is still unset**, so the agent runs on `gpt-4o-mini` via the
+   RESPONSE fallback. Phase 5 flagged it as weak at deciding when to search, and this
+   phase saw exactly that — it took an explicit "you do not know what is current" to make
+   it search at all. Worth setting to something stronger and re-running this eval.
+4. **`src/agent/tools.js` is now 474 lines**, third behind `prompts.js` (517) and
+   `openapi.js` (503), and one of eight files over the ~250 guideline. ARCHITECTURE §1
+   says `tools.js # every tool + TOOLSETS map`, so splitting it needs a gate. The obvious
+   cut is the pure date logic, which has no LangChain in it at all. One for the Phase 10
+   audit, along with the other seven.
+5. **Carried over:** Phase 0's deploy and parity run, Phase 2's `stats-eval`, Phase 3a's
+   `retrieval-parity`, Phase 3b's `knowledge-eval`, Phase 4's two live re-checks, and
+   Phase 6.5's open question on the retrieval gate.
 
 ---
 
@@ -1871,3 +1965,21 @@ clean `npm ci`. One line to delete; left alone because it is outside what was as
     itself, which is the one case where the collapse is deferred rather than applied:
     Phase 8 replaces that node, and until it does, a legacy web question is better served
     by the node that works than by the label that is a stub.
+
+## Phase 8 deviations from LLD
+
+47. **`resolve_time` refuses to resolve "since I joined", by design.** The LLD lists it as
+    an example the tool should handle. It cannot, honestly: there is no anchor for it in a
+    date utility, and the real date — TCS, 2023-08-01 — lives in the corpus as
+    `metadata.date_start`. Hardcoding an employment date into a date function would put a
+    fact in two places and rot the moment it changed. The tool returns
+    `{ resolved: false, reason }` telling the model to look the date up with
+    `metadata_filter` or `semantic_search` and use the real one. A wrong range is worse
+    than no range: it silently filters the corpus to the wrong slice, and the answer reads
+    as confident either way.
+48. **The document tools cite by title, not by id.** The LLD's `complex` agent was to
+    "cite the documents and sources used", and ids are the unambiguous handle. But
+    `GENERATE_SYSTEM_PROMPT` has forbidden exposing retrieval machinery since Phase 3b,
+    and a UUID in a visitor-facing answer is exactly that. Titles are what a visitor can
+    recognise and follow up on; the ids stay in the tool artifact, so the node and the run
+    feed still have them. Same information, different audience.

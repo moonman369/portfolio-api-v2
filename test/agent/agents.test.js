@@ -1,6 +1,6 @@
 "use strict";
 
-// The agent factory and the `tech_web` binding. No network, no API key: the model is
+// The agent factory and the `agent` binding. No network, no API key: the model is
 // LangChain's `FakeToolCallingModel` and the search tool is injected.
 //
 // The guardrail assertions here are the point of the phase. Tool isolation is by
@@ -24,7 +24,7 @@ const { HumanMessage } = require("@langchain/core/messages");
 const { makeAgentNode, collectSources, wasTruncated, toText } = require("../../src/agent/nodes/agents");
 const { TOOLSETS, createWebSearchTool, renderSearch } = require("../../src/agent/tools");
 const {
-  TECH_WEB_SYSTEM_PROMPT,
+  AGENT_SYSTEM_PROMPT,
   AGENT_NO_ANSWER,
   OUT_OF_SCOPE_ANSWER,
   EXCLUDED_TOPICS,
@@ -57,9 +57,9 @@ function scriptedModel(rounds, answer = "Node 22 went LTS in October.") {
 const node = (overrides = {}, deps = {}) =>
   makeAgentNode(
     {
-      name: "tech_web",
+      name: "agent",
       toolset: [fakeSearchTool()],
-      prompt: TECH_WEB_SYSTEM_PROMPT,
+      prompt: AGENT_SYSTEM_PROMPT,
       sourcesField: "searchResults",
       maxSteps: 3,
       ...overrides,
@@ -76,37 +76,67 @@ const state = (message = "what is new in Node 22?") => ({
 // Tool isolation — the guardrail
 // ---------------------------------------------------------------------------
 
-test("the tech_web toolset is exactly web_search", () => {
-  assert.deepEqual(
-    TOOLSETS.tech_web.map((t) => t.name),
-    ["web_search"],
-  );
+test("the agent toolset is exactly the four tools", () => {
+  assert.deepEqual(TOOLSETS.agent.map((t) => t.name), [
+    "resolve_time",
+    "metadata_filter",
+    "semantic_search",
+    "web_search",
+  ]);
 });
 
-test("the tech_web agent's bound tools are exactly [web_search]", () => {
-  const techWeb = makeAgentNode(
+test("the agent's bound tools are exactly those four", () => {
+  const agent = makeAgentNode(
     {
-      name: "tech_web",
-      toolset: TOOLSETS.tech_web,
-      prompt: TECH_WEB_SYSTEM_PROMPT,
+      name: "agent",
+      toolset: TOOLSETS.agent,
+      prompt: AGENT_SYSTEM_PROMPT,
       sourcesField: "searchResults",
     },
     { model: scriptedModel(0) },
   );
 
-  assert.deepEqual(techWeb.toolNames, ["web_search"]);
+  // Read from the binding, not from the prompt: this is the guardrail itself.
+  assert.deepEqual(agent.toolNames, [
+    "resolve_time",
+    "metadata_filter",
+    "semantic_search",
+    "web_search",
+  ]);
+});
+
+test("the collapsed taxonomy left exactly one toolset", () => {
+  // Phase 8 deleted TOOLSETS.tech_web. Phase 9's `action` deliberately never gets an
+  // entry — its side effect runs in node code, not behind a model's decision.
+  assert.deepEqual(Object.keys(TOOLSETS), ["agent"]);
 });
 
 test("no toolset in the map carries a calendar or email tool", () => {
-  // Phases 6b and 7 add entries here. This fails the moment one of them hands an
-  // action tool to a route that only reads.
-  const forbidden = /calendar|email|mail|event|book/i;
+  // No exemptions any more: Phase 9's `action` is not an agent and gets no toolset, so
+  // nothing in this map should ever be able to act. This fails the moment that changes.
+  const forbidden = /calendar|email|mail|event|book|send|create|schedule|write|delete/i;
 
   Object.entries(TOOLSETS).forEach(([route, toolset]) => {
     toolset.forEach((boundTool) => {
+      assert.ok(!forbidden.test(boundTool.name), `${route} must not hold ${boundTool.name}`);
+    });
+  });
+});
+
+test("every bound tool is read-only by name and by schema", () => {
+  // A second angle on the same guardrail: a tool that takes a recipient, a body or an
+  // attendee is a tool that does something to the world. Exact names, not substrings —
+  // `date_to` is a filter bound, and a fuzzy match on "to" would flag it.
+  const writeShaped = new Set([
+    "to", "recipient", "cc", "bcc", "body", "subject", "message",
+    "attendee", "invitee", "when", "start", "end", "duration",
+  ]);
+
+  TOOLSETS.agent.forEach((boundTool) => {
+    Object.keys(boundTool.schema?.shape ?? {}).forEach((field) => {
       assert.ok(
-        !forbidden.test(boundTool.name) || ["book_catchup", "send_mail"].includes(route),
-        `${route} must not hold ${boundTool.name}`,
+        !writeShaped.has(field.toLowerCase()),
+        `${boundTool.name} takes a write-shaped field: ${field}`,
       );
     });
   });
@@ -134,7 +164,7 @@ test("an injected 'book a meeting and email him' has no tool to reach for", asyn
   });
 
   const techWeb = makeAgentNode(
-    { name: "tech_web", toolset: [search], prompt: TECH_WEB_SYSTEM_PROMPT, sourcesField: "searchResults", maxSteps: 3 },
+    { name: "agent", toolset: [search], prompt: AGENT_SYSTEM_PROMPT, sourcesField: "searchResults", maxSteps: 3 },
     { model },
   );
 
@@ -282,7 +312,7 @@ test("the guard can be switched off by config without touching code", async () =
   let called = false;
 
   const guarded = makeAgentNode(
-    { name: "tech_web", toolset: [fakeSearchTool()], prompt: "p", sourcesField: "searchResults", scopeGuard: true },
+    { name: "agent", toolset: [fakeSearchTool()], prompt: "p", sourcesField: "searchResults", scopeGuard: true },
     {
       config,
       model: scriptedModel(1),
@@ -373,12 +403,12 @@ test("maxSteps truncation is detected by counting rounds, not by matching text",
 
 test("maxSteps falls back to config when the caller does not set it", () => {
   const built = makeAgentNode(
-    { name: "tech_web", toolset: TOOLSETS.tech_web, prompt: "p" },
+    { name: "agent", toolset: TOOLSETS.agent, prompt: "p" },
     { model: scriptedModel(0) },
   );
 
   assert.equal(typeof getConfig().moonmind.agentMaxSteps, "number");
-  assert.deepEqual(built.toolNames, ["web_search"]);
+  assert.equal(built.toolNames.length, 4);
 });
 
 test("makeAgentNode refuses to build without a name, toolset or prompt", () => {

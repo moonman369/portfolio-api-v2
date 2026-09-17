@@ -19,12 +19,12 @@ const { createStatsNode, createStatsAndDocsNode } = require("./nodes/stats");
 const { createKnowledgeNode } = require("./nodes/knowledge");
 const { makeAgentNode } = require("./nodes/agents");
 const { TOOLSETS } = require("./tools");
-const { TECH_WEB_SYSTEM_PROMPT } = require("./prompts");
+const { AGENT_SYSTEM_PROMPT } = require("./prompts");
 const { refusal, listCapabilities, greeting, makeStubNode } = require("./nodes/simple");
 
-// Routes whose real implementation lands in a later phase: `agent` in Phase 8 (four
-// tools on the Phase 5 factory), `action` in Phase 9 (book | mail).
-const STUBBED_ROUTES = Object.freeze(["agent", "action"]);
+// Routes whose real implementation lands in a later phase: `action` in Phase 9
+// (book | mail).
+const STUBBED_ROUTES = Object.freeze(["action"]);
 
 /** The production node set. Tests build their own and pass it straight to buildGraph. */
 function createNodes() {
@@ -40,20 +40,24 @@ function createNodes() {
     nodes[route] = makeStubNode(route);
   });
 
-  // Kept for the legacy `tech_web` route only (state.js LEGACY_NODES): no current label
-  // points at it, and Phase 8 replaces it with the four-tool `agent`. Leaving it wired
-  // means a pre-Phase-7 thread still gets a real web answer rather than a stub.
-  nodes.tech_web = makeAgentNode({
-    name: "tech_web",
-    toolset: TOOLSETS.tech_web,
-    prompt: TECH_WEB_SYSTEM_PROMPT,
+  // The one agent. `TOOLSETS.agent` is the whole of what it can do — there is no second
+  // place to look, and no prompt that widens it.
+  nodes.agent = makeAgentNode({
+    name: "agent",
+    toolset: TOOLSETS.agent,
+    prompt: AGENT_SYSTEM_PROMPT,
     sourcesField: "searchResults",
-    // Classify before searching. The router already sends off-topic questions to
-    // `refusal`, but it decides which branch answers, not whether a question that
-    // reached this one is worth a web search — "which coin should I buy" is a plausible
-    // industry question as far as it is concerned.
+    // Classify before dispatching a tool. The router already sends off-topic questions to
+    // `refusal`, but it decides which branch answers, not whether a question that reached
+    // this one is worth researching — "which coin should I buy" is a plausible industry
+    // question as far as it is concerned.
     scopeGuard: true,
   });
+
+  // The legacy `tech_web` label (state.js LEGACY_NODES) now points at the same node, so a
+  // pre-Phase-7 thread replaying it gets the four-tool agent rather than the single-tool
+  // one Phase 5 built. Same function, two names — nothing is duplicated.
+  nodes.tech_web = nodes.agent;
 
   // `stats` composes the other two when `slots.withDocuments` is set, and runs the
   // numbers alone otherwise — one label, two shapes.
@@ -119,6 +123,10 @@ function toTurn({ sessionId, runId, state }) {
     routeConfidence: result.routeConfidence ?? 0,
     answer: result.finalAnswer ?? null,
     documents: result.documents ?? [],
+    // The agent's sources — web results and document references. Written by every agent
+    // node since Phase 5, but never surfaced here until Phase 8 went looking for them and
+    // found every caller reporting zero.
+    searchResults: result.searchResults ?? [],
     statsPayload: result.statsPayload ?? null,
     retrievalDebug: result.retrievalDebug ?? null,
     error: result.error ?? null,
@@ -131,7 +139,7 @@ function toTurn({ sessionId, runId, state }) {
  * @param {{ sessionId: string, message: string }} turn
  * @param {{ graph?: object }} [deps] Injected compiled graph, for tests and evals.
  * @returns {Promise<{sessionId, runId, route, routeConfidence, answer, documents,
- *   statsPayload, retrievalDebug, error}>}
+ *   searchResults, statsPayload, retrievalDebug, error}>}
  */
 async function runTurn({ sessionId, message }, deps = {}) {
   const graph = deps.graph ?? (await getCompiledGraph());

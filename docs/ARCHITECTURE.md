@@ -174,7 +174,10 @@ guard (non-LLM: length cap, rate limit, auth)  [existing http-layer checks, unch
   never real. Trend and comparison questions about Ayan are answered from retrieval alone
   until Phase 9 adds the escalation.
 - `tech_web` and `complex`'s tool use merge into **`agent`**: one `makeAgentNode` call,
-  four tools (`resolve_time`, `metadata_filter`, `semantic_search`, `web_search`).
+  four tools (`resolve_time`, `metadata_filter`, `semantic_search`, `web_search`). Built
+  in Phase 8. `resolve_time` is deterministic; the two document tools are thin wrappers
+  over `retrieval/`'s existing arms, not copies of them. `TOOLSETS.agent` is the only
+  entry in the map — `action` is deliberately not an agent, so nothing else can act.
 - `book_catchup` and `send_mail` merge into **`action`**, branching internally on
   `slots.action`. Booking is a templated scheduling link from a hosted provider; mail is
   deterministic. Neither is an agent — no calendar tool, no confirmation step.
