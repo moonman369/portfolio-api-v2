@@ -31,7 +31,7 @@ const { getModel } = require("../src/agent/models");
 
 const OUTPUT_PATH = path.join(__dirname, "..", "docs", "evals", "retrieval-ab.md");
 
-// Mirrors scripts/about-me-eval.js's Phase 3b question set, Q1-Q9. Q10 there is the
+// Mirrors scripts/knowledge-eval.js's Phase 3b question set, Q1-Q9. Q10 there is the
 // mixed stats+docs query — stats has nothing to do with retrieval configuration, so it
 // is left out here.
 const QUESTIONS = Object.freeze([
@@ -217,7 +217,7 @@ function render({ corpusSize, rowsByQuestion, recallRows, currentK }) {
     `Generated: ${new Date().toISOString()}`,
     `Corpus size (moonmind_documents_v3): ${corpusSize} documents`,
     "",
-    "Four configs run over the same 9 questions (Phase 3b's about_me set, minus the",
+    "Four configs run over the same 9 questions (Phase 3b's knowledge set, minus the",
     "mixed stats+docs query). Everything but `decomposeEnabled`/`rerankEnabled` is",
     "whatever `.env` has right now — this does not change production defaults.",
     "",

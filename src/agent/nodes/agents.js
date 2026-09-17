@@ -50,8 +50,8 @@ const ScopeOutputSchema = z.object({
  * the failure is logged. A scope guard is an editorial filter, not a safety control:
  * the model's own training still applies, and the router's `refusal` route still exists,
  * so breaking every tech question because a classifier hiccuped is the worse outcome.
- * Note that this reasoning does NOT transfer to Phase 6b's calendar confirmation, which
- * guards a side effect and must fail closed.
+ * Note that this reasoning does NOT transfer to Phase 9's `action` node, which guards a
+ * side effect — sending mail — and must fail closed.
  */
 function createScopeGuard({ name, topics, model }) {
   const prompt = buildScopePrompt(topics);
@@ -179,7 +179,7 @@ function makeAgentNode({ name, toolset, prompt, maxSteps, sourcesField, scopeGua
       // always-on, so a date resolved once at boot would go stale within a day.
       //
       // This is the same defect Deviation 32 recorded for the old response prompt, in a
-      // new place. Every agent gets it, not just tech_web - Phase 6b cannot resolve
+      // new place. Every agent gets it, not just tech_web - Phase 9 cannot resolve
       // "next Tuesday" without knowing what today is.
       middleware: [
         dynamicSystemPromptMiddleware(() => `${prompt}\n\n${buildDateContext()}`),

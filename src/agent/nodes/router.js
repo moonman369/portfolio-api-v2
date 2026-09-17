@@ -8,29 +8,50 @@ const { z } = require("zod");
 const { HumanMessage, SystemMessage } = require("@langchain/core/messages");
 const { getConfig } = require("../../config");
 const { getModel } = require("../models");
-const { ROUTES, INHERITABLE_ROUTES, recentMessages } = require("../state");
+const {
+  ROUTES,
+  INHERITABLE_ROUTES,
+  recentMessages,
+  resolveLegacyRoute,
+  restoreLegacySlots,
+} = require("../state");
 const { ROUTER_SYSTEM_PROMPT, buildRouterContext, CANNED_DEAD_ENDS } = require("../prompts");
 
 // Flat on purpose: models fill a flat object far more reliably than a nested one.
-// `which` is lifted into `slots` before it reaches state.
+// `which`, `withDocuments` and `action` are lifted into `slots` before they reach state.
 const RouterOutputSchema = z.object({
   route: z.enum(ROUTES),
   confidence: z.number().min(0).max(1),
   which: z.enum(["github", "leetcode", "both"]).nullable(),
+  // The mixed "my github numbers AND my projects" question. Phase 7 collapsed the old
+  // `stats_and_docs` route into this slot rather than keeping an eighth label — the same
+  // shape as `action` below, and the composed node behind it is unchanged.
+  withDocuments: z.boolean(),
+  // Which half of `action` is wanted. Both branches land in Phase 9.
+  action: z.enum(["book", "mail"]).nullable(),
   cancelsActiveFlow: z.boolean(),
 });
 
-// Where an unusable classification lands. about_me is the safe default: it is the most
+// Where an unusable classification lands. knowledge is the safe default: it is the most
 // common intent, it is grounded in retrieved documents, and it cannot cause a side
 // effect. Refusing instead would contradict the old pipeline's explicit rule that
 // MoonMind never answers with a generic refusal.
-const LOW_CONFIDENCE_ROUTE = "about_me";
+const LOW_CONFIDENCE_ROUTE = "knowledge";
 
-function toSlots({ route, which }) {
-  // `which` is only meaningful for the two stats routes; drop it everywhere else so a
-  // stray value can't influence a later node.
-  const usesWhich = route === "stats" || route === "stats_and_docs";
-  return usesWhich && which ? { which } : {};
+function toSlots({ route, which, withDocuments, action }) {
+  // Each slot is dropped everywhere it is meaningless, so a stray value from the model
+  // cannot influence a node that has no business reading it.
+  const slots = {};
+
+  if (route === "stats") {
+    if (which) slots.which = which;
+    if (withDocuments === true) slots.withDocuments = true;
+  }
+  if (route === "action" && action) {
+    slots.action = action;
+  }
+
+  return slots;
 }
 
 /**
@@ -39,16 +60,23 @@ function toSlots({ route, which }) {
  * Below the threshold the classification is discarded. What replaces it is the previous
  * turn's route when there is a safe one — an unsure turn in the middle of an exchange is
  * far more likely to be continuing it than starting something new, and this is what stops
- * a terse follow-up from landing on `refusal`. Otherwise it falls to about_me, which is
+ * a terse follow-up from landing on `refusal`. Otherwise it falls to knowledge, which is
  * the most common intent, is grounded in retrieved documents, and has no side effects.
+ *
+ * A cancel beats inheritance: "never mind" is the user saying the previous thing is over,
+ * so continuing it is the one thing they have ruled out. This is step 2 of the precedence
+ * order in ARCHITECTURE.md §5 — the router half of it; `routeFromState` holds the rest.
  *
  * Note this only covers the UNSURE case. The failure that prompted it came back at
  * confidence 1.00, which no floor catches; the conversation context and the prompt rules
  * are what address that. This is the safety net under them, not the fix.
  */
-function applyConfidenceFloor(route, confidence, minConfidence, previousRoute) {
+function applyConfidenceFloor(route, confidence, minConfidence, previousRoute, cancelled) {
   if (confidence >= minConfidence) {
     return route;
+  }
+  if (cancelled) {
+    return LOW_CONFIDENCE_ROUTE;
   }
   return INHERITABLE_ROUTES.includes(previousRoute) ? previousRoute : LOW_CONFIDENCE_ROUTE;
 }
@@ -123,7 +151,14 @@ function createRouterNode(deps = {}) {
     const window = Math.min(moonmind.routerHistoryMessages, moonmind.historyMaxMessages);
     const history = recentMessages(routerHistory(state.messages ?? []), window);
     const { current, turns } = splitForRouter(history);
-    const context = buildRouterContext({ turns, previousRoute: state.previousRoute ?? null });
+
+    // `previousRoute` is where an old taxonomy actually reaches this one: unlike `route`
+    // it survives the per-turn reset, so a live thread hands the router a name that no
+    // longer exists. Translate it before it is shown to the model or tested for
+    // inheritance, or every pre-Phase-7 thread silently loses both.
+    const rawPreviousRoute = state.previousRoute ?? null;
+    const previousRoute = resolveLegacyRoute(rawPreviousRoute);
+    const context = buildRouterContext({ turns, previousRoute });
 
     const messages = [
       new SystemMessage(ROUTER_SYSTEM_PROMPT),
@@ -150,7 +185,8 @@ function createRouterNode(deps = {}) {
           LOW_CONFIDENCE_ROUTE,
           0,
           moonmind.routerMinConfidence,
-          state.previousRoute ?? null,
+          previousRoute,
+          false,
         ),
         routeConfidence: 0,
         slots: {},
@@ -161,13 +197,24 @@ function createRouterNode(deps = {}) {
       output.route,
       output.confidence,
       moonmind.routerMinConfidence,
-      state.previousRoute ?? null,
+      previousRoute,
+      output.cancelsActiveFlow === true,
     );
+
+    // When the classification was confident, the model's `withDocuments` is the answer —
+    // it read this turn's question. Only when the route came from inheritance instead does
+    // a thread that was mid mixed-stats question under the old taxonomy need its slot
+    // handed back, since nothing this turn expressed a view on it.
+    const inherited = output.confidence < moonmind.routerMinConfidence;
+    const slots =
+      inherited && route === "stats"
+        ? restoreLegacySlots(rawPreviousRoute, toSlots(output))
+        : toSlots(output);
 
     return {
       route,
       routeConfidence: output.confidence,
-      slots: { ...toSlots(output), cancelsActiveFlow: output.cancelsActiveFlow === true },
+      slots: { ...slots, cancelsActiveFlow: output.cancelsActiveFlow === true },
     };
   };
 }

@@ -20,7 +20,6 @@
     "@langchain/langgraph-checkpoint-mongodb": "^1.4.1",
     "@langchain/openai": "^1.5.13",
     "cors": "^2.8.5",
-    "dotenv": "^17.4.2",
     "express": "^5.1.0",
     "express-rate-limit": "^8.5.2",
     "langchain": "^1.5.11",

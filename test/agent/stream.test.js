@@ -112,14 +112,14 @@ test("a node's anonymous inner runnables do not each become a step", async () =>
 });
 
 test("a sub-step named `<node>.<step>` opts into the feed under its own name", async () => {
-  // The convention `about_me.retrieve` relies on. Naming a runnable is how a node says
+  // The convention `knowledge.retrieve` relies on. Naming a runnable is how a node says
   // "this part is worth watching"; the label is the runnable's name, not the node's.
   const retrieve = RunnableLambda.from(async () => ({ documents: [{ id: "a" }, { id: "b" }] }))
-    .withConfig({ runName: "about_me.retrieve" });
+    .withConfig({ runName: "knowledge.retrieve" });
 
   const graph = graphWith({
-    router: async () => ({ route: "about_me", routeConfidence: 1 }),
-    about_me: async (state, config) => retrieve.invoke(state, config),
+    router: async () => ({ route: "knowledge", routeConfidence: 1 }),
+    knowledge: async (state, config) => retrieve.invoke(state, config),
   });
 
   const { steps } = await collect(streamTurn({ sessionId: "s1", message: "hi", runId: "r1" }, { graph }));
@@ -127,10 +127,10 @@ test("a sub-step named `<node>.<step>` opts into the feed under its own name", a
   assert.deepEqual(shape(steps), [
     "router:start",
     "router:end",
-    "about_me:start",
-    "about_me.retrieve:start",
-    "about_me.retrieve:end",
-    "about_me:end",
+    "knowledge:start",
+    "knowledge.retrieve:start",
+    "knowledge.retrieve:end",
+    "knowledge:end",
     "generate:start",
     "generate:end",
   ]);
@@ -139,23 +139,23 @@ test("a sub-step named `<node>.<step>` opts into the feed under its own name", a
 test("a runnable named exactly after its node does not double the node's steps", async () => {
   // What about-me.js used to do. Such a runnable is indistinguishable from the graph
   // node in `streamEvents`, so it must not be treated as a second boundary.
-  const chain = RunnableLambda.from(async () => ({ documents: [] })).withConfig({ runName: "about_me" });
+  const chain = RunnableLambda.from(async () => ({ documents: [] })).withConfig({ runName: "knowledge" });
 
   const graph = graphWith({
-    router: async () => ({ route: "about_me", routeConfidence: 1 }),
-    about_me: async (state, config) => chain.invoke(state, config),
+    router: async () => ({ route: "knowledge", routeConfidence: 1 }),
+    knowledge: async (state, config) => chain.invoke(state, config),
   });
 
   const { steps } = await collect(streamTurn({ sessionId: "s1", message: "hi", runId: "r1" }, { graph }));
-  const boundaries = steps.filter((step) => step.node === "about_me");
+  const boundaries = steps.filter((step) => step.node === "knowledge");
 
   assert.deepEqual(boundaries.map((step) => step.type), ["start", "end"]);
 });
 
 test("a throwing node becomes an error step, and the run still answers", async () => {
   const graph = graphWith({
-    router: async () => ({ route: "about_me", routeConfidence: 1 }),
-    about_me: async () => {
+    router: async () => ({ route: "knowledge", routeConfidence: 1 }),
+    knowledge: async () => {
       throw new Error("retrieval exploded");
     },
   });
@@ -167,8 +167,8 @@ test("a throwing node becomes an error step, and the run still answers", async (
   assert.deepEqual(shape(steps), [
     "router:start",
     "router:end",
-    "about_me:start",
-    "about_me:error",
+    "knowledge:start",
+    "knowledge:error",
     "generate:start",
     "generate:end",
   ]);
@@ -177,7 +177,7 @@ test("a throwing node becomes an error step, and the run still answers", async (
   assert.equal(failure.summary, "retrieval exploded");
 
   // The Phase 4 criterion: an error step, then a graceful answer — not a failed run.
-  assert.deepEqual(turn.error, { node: "about_me", message: "retrieval exploded" });
+  assert.deepEqual(turn.error, { node: "knowledge", message: "retrieval exploded" });
   assert.match(turn.answer, /Something went wrong/);
 });
 

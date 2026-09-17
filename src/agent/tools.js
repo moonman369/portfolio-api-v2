@@ -105,7 +105,7 @@ const webSearch = createWebSearchTool();
  * Route -> the tools that route's agent is built with. A route absent from this map gets
  * no tools at all.
  *
- * Phase 6b adds `book_catchup` and `send_mail`; Phase 7 adds `complex`. Nothing else
+ * Phase 8 gives `agent` its four tools; Phase 9 adds `action`. Nothing else
  * ever gains `web_search` by accident, because gaining it means editing this object.
  */
 const TOOLSETS = Object.freeze({

@@ -169,18 +169,24 @@ of this.
 gets history and the previous route and that an unsure follow-up does not refuse;
 single-turn eval accuracy does not regress; `complex` still returns "not implemented yet".
 
-### `[ ]` Phase 7 — Router (6 labels) + `knowledge` node
-**Scope:** router relabeled to 6 outputs: `knowledge`, `stats`, `agent`, `action`,
-`refusal`, `capabilities`. `about_me` and `complex`'s retrieval-only path merge into one
-`knowledge` node, reusing the existing decompose → fan-out → rank → rerank pipeline.
-`knowledge` may hand off to `agent` once per turn, the budget tracked in
-`agentEscalationUsed` (reset per turn) so it can't loop. No other node escalates; `agent`
-never escalates back.
-**⛔ GATE:** how a mixed stats+knowledge question routes now that `stats_and_docs` has no
-slot in the 6-label taxonomy — carried over unresolved from the Phase 1 gate.
-**Done when:** router-eval passes on the relabeled fixtures; `knowledge` node tests cover
-the merged about_me/complex paths and the escalation budget; a live knowledge question that
-needs live/tool grounding escalates to `agent` exactly once.
+### `[x]` Phase 7 — Route collapse (7 labels) + `knowledge` node
+*A refactor: no new capability. The escalation originally scoped here moved to Phase 9,
+so `knowledge` answers the former `complex` questions from retrieval alone for now.*
+**⛔ GATE — settled 2026-09-17:** mixed stats+knowledge questions become
+`slots.withDocuments` on `stats`, not an eighth label (Ayan's call). Carried over
+unresolved from the Phase 1 gate; see Decisions.
+**Scope:** router relabeled to 7 outputs — `greeting`, `knowledge`, `stats`, `agent`,
+`action`, `refusal`, `capabilities`. `about_me` + `complex` merge into `knowledge`
+(`nodes/about-me.js` → `nodes/knowledge.js`, logic unchanged); `book_catchup` +
+`send_mail` into `action` behind `slots.action`; `stats_and_docs` into `stats` behind
+`slots.withDocuments`; `list_capabilities` renamed `capabilities`. `agent` and `action`
+are stubs until Phases 8 and 9. `LEGACY_ROUTE_MAP` translates all seven old names for
+checkpointed threads. Previous-route inheritance and `activeFlow` reconciled into one
+precedence order (ARCHITECTURE.md §5).
+**Done when:** router-eval passes on remapped labels with no per-route regression; 6.5's
+multi-turn fixture passes on the new labels; an offline test replays every legacy route
+value; the Phase 3b set routes through `knowledge`; the trend question is recorded in
+`docs/evals/knowledge.md` as Phase 9's baseline.
 
 ### `[ ]` Phase 8 — `agent` node (one bounded agent, four tools)
 **Scope:** `TOOLSETS.agent = [resolve_time, metadata_filter, semantic_search, web_search]`
@@ -900,6 +906,90 @@ exactly the "tune by feel" the brief ruled out, so I stopped here.
 
 ---
 
+### Phase 7 — Route collapse — 2026-09-17
+
+**Shipped.** Ten labels down to seven, as a pure refactor — no new capability. 353 offline
+tests pass (8 new). Router eval: **35/35 single prompts, 11/11 conversation turns**, with
+every pre-collapse prompt kept and remapped rather than rewritten.
+
+**The gate, and what the brief missed.** The brief listed six legacy routes to map. Seven
+were being removed: `stats_and_docs` was absent from the list, had no slot in the seven
+labels, and was the subject of the ⛔ GATE recorded against this phase since Phase 1. It
+was not theoretical — 2 live runs used it, `createStatsAndDocsNode` composes stats and
+retrieval today, and it was advertised in the capability menu. Raised rather than guessed;
+Ayan's call is in Decisions.
+
+**A correction worth keeping, because it is the second time this pattern has appeared.**
+The brief said live threads hold `route: <legacy>` and to map it in `routeFromState`.
+Verified against a real checkpoint: the stored value is real (`route: "tech_web"`), but
+`PER_TURN_RESET` sets `route: null` before the router runs, so `routeFromState` never sees
+it. The field that actually carries a legacy value into this taxonomy is **`previousRoute`**
+— same thread, same value, and *outside* the reset. Without translating it there, every
+pre-Phase-7 thread would have silently lost both 6.5's inheritance (`INHERITABLE_ROUTES`
+stops matching) and its context block. The map is applied in both places. As in Phase 6.5,
+the instruction was right and the stated mechanism was not.
+
+**Files.**
+- `src/agent/state.js` — the seven-label `ROUTES`, `LEGACY_ROUTE_MAP`, `LEGACY_NODES`,
+  `resolveLegacyRoute`, `restoreLegacySlots`, `ACTION_ROUTES` and `INHERITABLE_ROUTES`
+  updated. The legacy vocabulary lives here, not in `graph.js`, because the router needs
+  it too and `state.js` imports nothing but LangGraph — no cycle.
+- `src/agent/graph.js` — `routeFromState` resolves legacy names for both `route` and
+  `activeFlow`, and carries the full precedence order as a comment; `buildGraph` registers
+  `LEGACY_NODES` alongside the routes so a replayed thread has somewhere real to land.
+- `src/agent/nodes/router.js` — `withDocuments` and `action` added to the schema and
+  lifted into slots; `previousRoute` translated before it is shown to the model or tested
+  for inheritance; a cancel now blocks inheritance.
+- `src/agent/nodes/about-me.js` → **`src/agent/nodes/knowledge.js`** (git mv, logic
+  unchanged), and its test alongside it.
+- `src/agent/nodes/stats.js` — the composed node branches on `slots.withDocuments`, and
+  skips retrieval entirely without it.
+- `src/agent/prompts.js` — router labels and boundaries edited in place; 6.5's history
+  block, previous-route field, refinement rule and refusal guardrail are untouched.
+  Capability copy rewritten for four advertised routes.
+- `src/agent/index.js` — `STUBBED_ROUTES` is now `agent` + `action`; `tech_web` kept wired
+  as a legacy node.
+- `scripts/router-eval.js` — remapped, not rewritten; prompts may now assert slots.
+  `scripts/about-me-eval.js` → **`scripts/knowledge-eval.js`**.
+- `docs/ARCHITECTURE.md` — the taxonomy block (7 labels), and §5's precedence order.
+- `docs/evals/knowledge.md` (new) — the Phase 9 baseline.
+
+**Env vars.** None added; still 80.
+
+**Verified live.**
+- Router eval 35/35 and 11/11. Per route: knowledge 7/7, stats 9/9 (including 5 mixed
+  questions asserting `withDocuments`), agent 3/3, action 6/6 (3 book, 3 mail), refusal
+  3/3, capabilities 3/3, greeting 4/4. No per-route regression against Phase 1's numbers.
+- 6.5's seven-turn fixture passes on the new labels: "Hey" → `greeting`, the resume
+  follow-ups stay on `knowledge`, nothing routes to `refusal`.
+- The Phase 3b question set: 10/10, nine to `knowledge` and the mixed one to `stats` with
+  `withDocuments` set.
+- `"How have Ayan's AI skills evolved over time?"` → `knowledge`, 15 documents, a
+  chronologically ordered answer from retrieval alone. Recorded in `docs/evals/knowledge.md`.
+- Slot end to end: the mixed question returns stats **and** 15 documents; a pure numbers
+  question returns stats and **0** documents, skipping retrieval rather than discarding it.
+- Sanitizer **verified, not changed**: `external_links` on 9 of 15 documents and a date
+  field on 12 of 15 still reach `generate`, exactly as 6.5 left it.
+
+**Deviations.** Two, recorded below (45-46).
+
+**Open items.**
+1. **`agent` is a stub, so web/tech questions answer "not available yet" until Phase 8.**
+   This is the one live capability regression in the phase, and it is deliberate — the
+   brief specifies a stub, and the four-tool agent is Phase 8's whole scope. The working
+   `tech_web` node is still wired for legacy threads, so nothing was deleted.
+2. **A mixed question routed to `stats` cannot reach Phase 9's escalation**, since that
+   edge runs from `knowledge`. Phase 9 decides whether the mixed path should instead be
+   `knowledge` + `slots.withStats`. Not moved now, on Ayan's explicit instruction.
+3. **`activeFlow` is still dormant** — nothing sets it. Kept, with its stickiness, because
+   Phase 9's mail flow is the first thing that will.
+4. **Carried over:** Phase 0's deploy and parity run, Phase 2's `stats-eval`, Phase 3a's
+   `retrieval-parity`, Phase 3b's `knowledge-eval` (renamed this phase), Phase 4's two live
+   re-checks, Phase 5's live Tavily check, and Phase 6.5's open question on the retrieval
+   gate (`MOONMIND_MIN_SEMANTIC_SCORE` is still 0, so `k` is fixed at 15).
+
+---
+
 ---
 
 ## Decisions
@@ -959,6 +1049,24 @@ exactly the "tune by feel" the brief ruled out, so I stopped here.
   the extra context is cheap. This phase changed no defaults itself — Ayan applies the new
   value to the deployed `.env`; Phase 7 is where `config.js`'s default would move if that
   is what this decision is later understood to mean for a clean checkout.
+- **2026-09-17 — Mixed stats+knowledge queries are a slot on `stats`, not a label**
+  (Ayan, at the Phase 7 gate, closing the question left open since Phase 1). The router
+  sets `slots.withDocuments` and the existing composed node branches on it, the same shape
+  `action` uses for `slots.action`. The alternative — an eighth label — was rejected as
+  carrying its own node and its own router bullet for what is one boolean. **Note the
+  label is now narrower than what the node does:** `stats` also retrieves. Recorded here
+  because that is a real readability cost, accepted deliberately.
+- **2026-09-17 — Legacy route names are translated, not dropped** (Phase 7). 20 live
+  threads carried pre-collapse values, so `LEGACY_ROUTE_MAP` covers all seven old names.
+  `tech_web` maps to **itself**, not to `agent`: the node still works and `agent` is a
+  stub until Phase 8, so collapsing it would turn a working answer into "not available
+  yet". Unknown-and-unmapped still falls to `refusal`.
+- **2026-09-17 — One precedence order for holding a conversation in place** (Phase 7):
+  error → cancel → `activeFlow` → inheritance → classification → refusal, documented in
+  ARCHITECTURE.md §5. A cancel beats **both** stickiness and inheritance, which is new:
+  before this, "never mind" could still be overridden by 6.5's inheritance on a
+  low-confidence turn. `activeFlow` outranks inheritance because it means a node is
+  waiting on an answer, not merely that the last turn went somewhere.
 
 ---
 
@@ -1742,3 +1850,24 @@ clean `npm ci`. One line to delete; left alone because it is outside what was as
     learned it** (see the 2026-09-16 out-of-band entry): when a classifier misbehaves, the
     input is a likelier culprit than the prompt, and prompt wording could not fix either
     case.
+
+## Phase 7 deviations from LLD
+
+45. **The taxonomy is seven labels, not the eight of LLD §2 or the six ARCHITECTURE.md
+    carried after Phase 6.** `greeting` (Phase 6.5) makes seven, and `stats` absorbed
+    `stats_and_docs` rather than the mixed case getting a label of its own. *Why:* the LLD
+    has no `greeting` at all — it routed "hey" to `list_capabilities`, which was a live
+    complaint — and its taxonomy never had a slot for the mixed stats+portfolio question
+    the old regex router handled. Deviation 17 created `stats_and_docs` to preserve that;
+    Phase 7 keeps the behaviour and drops the label, which is the trade recorded in
+    Decisions. Net: one label for each thing a visitor can want, and two booleans
+    (`slots.withDocuments`, `slots.action`) for the variations inside two of them.
+46. **Old route names are translated rather than migrated.** The LLD assumes a single
+    taxonomy for the life of the service and says nothing about changing one under live
+    threads. `LEGACY_ROUTE_MAP` translates at read time — in `routeFromState` and on
+    `previousRoute` — instead of rewriting checkpoints, because a checkpoint is LangGraph's
+    serialized state and rewriting it in place would mean owning that format. Read-time
+    translation costs one lookup and has no migration to get wrong. `tech_web` maps to
+    itself, which is the one case where the collapse is deferred rather than applied:
+    Phase 8 replaces that node, and until it does, a legacy web question is better served
+    by the node that works than by the label that is a stub.

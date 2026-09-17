@@ -85,13 +85,13 @@ test("runTurn keys the thread on sessionId and bounds the run", async () => {
 
 test("runTurn reports a node failure recorded by the error boundary", async () => {
   const graph = fakeGraph({
-    error: { node: "about_me", message: "boom" },
+    error: { node: "knowledge", message: "boom" },
     finalAnswer: "graceful message",
   });
 
   const turn = await runTurn({ sessionId: "abc", message: "hi" }, { graph });
 
-  assert.deepEqual(turn.error, { node: "about_me", message: "boom" });
+  assert.deepEqual(turn.error, { node: "knowledge", message: "boom" });
   assert.equal(turn.answer, "graceful message");
 });
 
@@ -108,17 +108,18 @@ test("the production node set covers router, generate and every route", () => {
 test("only the phases still to come are stubbed", () => {
   const live = ROUTES.filter((route) => !STUBBED_ROUTES.includes(route));
 
-  // Phase 1: refusal + list_capabilities. Phase 2: the two stats routes.
-  // Phase 3b: about_me. Phase 5: tech_web. Phase 6.5: greeting. Update as each later
-  // phase lands — this is the tripwire for a forgotten stub.
-  assert.deepEqual(live.sort(), [
-    "about_me",
-    "greeting",
-    "list_capabilities",
-    "refusal",
-    "stats",
-    "stats_and_docs",
-    "tech_web",
-  ]);
-  assert.deepEqual([...STUBBED_ROUTES].sort(), ["book_catchup", "complex", "send_mail"]);
+  // Phase 1: refusal + capabilities. Phase 2: stats. Phase 3b: knowledge (then
+  // `about_me`). Phase 6.5: greeting. Phase 8 takes `agent` off this list, Phase 9
+  // `action` — this is the tripwire for a forgotten stub.
+  assert.deepEqual(live.sort(), ["capabilities", "greeting", "knowledge", "refusal", "stats"]);
+  assert.deepEqual([...STUBBED_ROUTES].sort(), ["action", "agent"]);
+});
+
+test("the legacy tech_web node is still wired, with no label pointing at it", () => {
+  const nodes = createNodes();
+
+  // Phase 8 replaces it with the four-tool `agent`. Until then a pre-Phase-7 thread that
+  // replays `tech_web` gets a real web answer rather than the `agent` stub.
+  assert.equal(typeof nodes.tech_web, "function");
+  assert.ok(!ROUTES.includes("tech_web"), "not a route any more");
 });

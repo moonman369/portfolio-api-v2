@@ -80,25 +80,68 @@ test("router writes route, confidence and slots from a confident classification"
   assert.equal(result.slots.cancelsActiveFlow, false);
 });
 
-test("router keeps `which` only for the stats routes", async () => {
-  for (const route of ["stats", "stats_and_docs"]) {
-    const node = createRouterNode({
-      model: fakeRouterModel({ route, confidence: 0.9, which: "both", cancelsActiveFlow: false }),
-    });
-    const result = await node(baseState());
-    assert.equal(result.slots.which, "both", `${route} should keep which`);
-  }
+test("router keeps `which` and `withDocuments` only for stats", async () => {
+  const stats = createRouterNode({
+    model: fakeRouterModel({
+      route: "stats",
+      confidence: 0.9,
+      which: "both",
+      withDocuments: true,
+      action: null,
+      cancelsActiveFlow: false,
+    }),
+  });
+  const onStats = await stats(baseState());
+  assert.equal(onStats.slots.which, "both");
+  assert.equal(onStats.slots.withDocuments, true, "the mixed question keeps its slot");
 
   const node = createRouterNode({
     model: fakeRouterModel({
-      route: "about_me",
+      route: "knowledge",
       confidence: 0.9,
       which: "github",
+      withDocuments: true,
+      action: "mail",
       cancelsActiveFlow: false,
     }),
   });
   const result = await node(baseState());
   assert.equal(result.slots.which, undefined, "non-stats routes must drop which");
+  assert.equal(result.slots.withDocuments, undefined, "and withDocuments");
+  assert.equal(result.slots.action, undefined, "and an action meant for another route");
+});
+
+test("a pure numbers question carries no withDocuments slot", async () => {
+  const node = createRouterNode({
+    model: fakeRouterModel({
+      route: "stats",
+      confidence: 0.95,
+      which: "github",
+      withDocuments: false,
+      action: null,
+      cancelsActiveFlow: false,
+    }),
+  });
+
+  const result = await node(baseState());
+  assert.equal(result.slots.withDocuments, undefined, "absent, so the stats node skips retrieval");
+});
+
+test("router lifts `action` into slots for the action route", async () => {
+  for (const action of ["book", "mail"]) {
+    const node = createRouterNode({
+      model: fakeRouterModel({
+        route: "action",
+        confidence: 0.9,
+        which: null,
+        withDocuments: false,
+        action,
+        cancelsActiveFlow: false,
+      }),
+    });
+
+    assert.equal((await node(baseState())).slots.action, action);
+  }
 });
 
 test("a structured-output failure hits the deterministic fallback", async () => {
@@ -114,7 +157,7 @@ test("a structured-output failure hits the deterministic fallback", async () => 
 test("low confidence redirects to the low-confidence route", async () => {
   const node = createRouterNode({
     model: fakeRouterModel({
-      route: "tech_web",
+      route: "agent",
       confidence: 0.2,
       which: null,
       cancelsActiveFlow: false,
@@ -128,7 +171,7 @@ test("low confidence redirects to the low-confidence route", async () => {
 });
 
 test("low confidence never lands on an action route", async () => {
-  for (const route of ["book_catchup", "send_mail"]) {
+  for (const route of ["action"]) {
     const node = createRouterNode({
       model: fakeRouterModel({ route, confidence: 0.35, which: null, cancelsActiveFlow: false }),
     });
@@ -140,14 +183,14 @@ test("low confidence never lands on an action route", async () => {
 test("a confident action route is preserved", async () => {
   const node = createRouterNode({
     model: fakeRouterModel({
-      route: "book_catchup",
+      route: "action",
       confidence: 0.9,
       which: null,
       cancelsActiveFlow: false,
     }),
   });
 
-  assert.equal((await node(baseState())).route, "book_catchup");
+  assert.equal((await node(baseState())).route, "action");
 });
 
 test("router passes a capped slice of history to the model", async () => {
@@ -192,7 +235,7 @@ test("refusal returns a real answer without calling a model", async () => {
   assert.ok(result.finalAnswer.length > 40);
 });
 
-test("list_capabilities is templated from the route enum", async () => {
+test("capabilities is templated from the route enum", async () => {
   const { finalAnswer } = await listCapabilities();
 
   assert.ok(finalAnswer.includes("GitHub"), "mentions stats");
@@ -231,7 +274,7 @@ test("a repeat greeting in one session is not word-for-word identical", async ()
 });
 
 test("stub nodes answer without clobbering router slots", async () => {
-  const result = await makeStubNode("about_me")();
+  const result = await makeStubNode("knowledge")();
 
   assert.equal(result.finalAnswer, NOT_IMPLEMENTED_ANSWER);
   assert.equal(result.slots, undefined, "must not overwrite slots");
@@ -296,7 +339,7 @@ test("the router never sees MoonMind's own canned dead-ends", async () => {
   // into refusal@1.0 against the real model, and 1.0 clears the confidence floor, so
   // nothing downstream catches it. Prompt wording was measured and did not fix it.
   const model = fakeRouterModel({
-    route: "about_me",
+    route: "knowledge",
     confidence: 0.9,
     which: null,
     cancelsActiveFlow: false,
@@ -339,7 +382,7 @@ test("the router never sees MoonMind's own canned dead-ends", async () => {
 
 test("the router still sees real answers, so follow-ups stay resolvable", async () => {
   const model = fakeRouterModel({
-    route: "about_me",
+    route: "knowledge",
     confidence: 0.9,
     which: null,
     cancelsActiveFlow: false,
@@ -368,7 +411,7 @@ test("the router is given the message to classify, not a transcript to wade thro
   // input (55 chars of 5857) and lost to the assistant's own prose. It classified
   // `refusal` at 1.00 three times out of three; the same message alone gave about_me.
   const model = fakeRouterModel({
-    route: "about_me",
+    route: "knowledge",
     confidence: 0.9,
     which: null,
     cancelsActiveFlow: false,
@@ -382,7 +425,7 @@ test("the router is given the message to classify, not a transcript to wade thro
         new AIMessage(longAnswer),
         new HumanMessage("Not the Resume overview.... I want just the resume link"),
       ],
-      previousRoute: "about_me",
+      previousRoute: "knowledge",
     }),
   );
 
@@ -390,7 +433,7 @@ test("the router is given the message to classify, not a transcript to wade thro
   const everything = sent.map((message) => String(message.content)).join("\n");
 
   assert.ok(!everything.includes(longAnswer), "the long answer is clipped, not replayed");
-  assert.ok(everything.includes("previous turn was routed to `about_me`"), "previous route is stated");
+  assert.ok(everything.includes("previous turn was routed to `knowledge`"), "previous route is stated");
   assert.equal(
     String(sent[sent.length - 1].content),
     "Not the Resume overview.... I want just the resume link",
@@ -416,17 +459,17 @@ test("an unsure follow-up continues the previous route instead of refusing", asy
         new AIMessage("Here is an overview of his resume..."),
         new HumanMessage("no, just the link"),
       ],
-      previousRoute: "about_me",
+      previousRoute: "knowledge",
     }),
   );
 
-  assert.equal(result.route, "about_me");
+  assert.equal(result.route, "knowledge");
 });
 
 test("an unsure turn never inherits a route that refuses or acts", async () => {
   const unsure = { confidence: 0.2, which: null, cancelsActiveFlow: false };
 
-  for (const previousRoute of ["refusal", "greeting", "book_catchup", "send_mail", null]) {
+  for (const previousRoute of ["refusal", "greeting", "capabilities", "action", null]) {
     const model = fakeRouterModel({ route: "refusal", ...unsure });
     const result = await createRouterNode({ model })(
       baseState({ messages: [new HumanMessage("hmm")], previousRoute }),
@@ -442,7 +485,7 @@ test("an unsure turn never inherits a route that refuses or acts", async () => {
 
 test("a first turn sends no conversation context at all", async () => {
   const model = fakeRouterModel({
-    route: "about_me",
+    route: "knowledge",
     confidence: 0.9,
     which: null,
     cancelsActiveFlow: false,

@@ -16,14 +16,15 @@ const runs = require("./runs");
 const { createRouterNode } = require("./nodes/router");
 const { createGenerateNode } = require("./nodes/generate");
 const { createStatsNode, createStatsAndDocsNode } = require("./nodes/stats");
-const { createAboutMeNode } = require("./nodes/about-me");
+const { createKnowledgeNode } = require("./nodes/knowledge");
 const { makeAgentNode } = require("./nodes/agents");
 const { TOOLSETS } = require("./tools");
 const { TECH_WEB_SYSTEM_PROMPT } = require("./prompts");
 const { refusal, listCapabilities, greeting, makeStubNode } = require("./nodes/simple");
 
-// Routes whose real implementation lands in a later phase (6b, 7).
-const STUBBED_ROUTES = Object.freeze(["complex", "book_catchup", "send_mail"]);
+// Routes whose real implementation lands in a later phase: `agent` in Phase 8 (four
+// tools on the Phase 5 factory), `action` in Phase 9 (book | mail).
+const STUBBED_ROUTES = Object.freeze(["agent", "action"]);
 
 /** The production node set. Tests build their own and pass it straight to buildGraph. */
 function createNodes() {
@@ -31,7 +32,7 @@ function createNodes() {
     router: createRouterNode(),
     generate: createGenerateNode(),
     refusal,
-    list_capabilities: listCapabilities,
+    capabilities: listCapabilities,
     greeting,
   };
 
@@ -39,8 +40,9 @@ function createNodes() {
     nodes[route] = makeStubNode(route);
   });
 
-  // The only agent so far. `TOOLSETS.tech_web` is the whole of what it can do — there is
-  // no second place to look, and no prompt that widens it.
+  // Kept for the legacy `tech_web` route only (state.js LEGACY_NODES): no current label
+  // points at it, and Phase 8 replaces it with the four-tool `agent`. Leaving it wired
+  // means a pre-Phase-7 thread still gets a real web answer rather than a stub.
   nodes.tech_web = makeAgentNode({
     name: "tech_web",
     toolset: TOOLSETS.tech_web,
@@ -53,12 +55,12 @@ function createNodes() {
     scopeGuard: true,
   });
 
-  // stats_and_docs composes the other two rather than reimplementing either.
-  nodes.about_me = createAboutMeNode();
-  nodes.stats = createStatsNode();
-  nodes.stats_and_docs = createStatsAndDocsNode({
-    statsNode: nodes.stats,
-    aboutMeNode: nodes.about_me,
+  // `stats` composes the other two when `slots.withDocuments` is set, and runs the
+  // numbers alone otherwise — one label, two shapes.
+  nodes.knowledge = createKnowledgeNode();
+  nodes.stats = createStatsAndDocsNode({
+    statsNode: createStatsNode(),
+    knowledgeNode: nodes.knowledge,
   });
 
   return nodes;
@@ -162,7 +164,7 @@ async function runTurn({ sessionId, message }, deps = {}) {
  *
  *   - `event.name === langgraph_node` is the node boundary itself;
  *   - `<node>.<something>` is a sub-step whose author named it, on purpose, to be
- *     watchable — `about_me.retrieve` is the first of them. Naming a runnable is how a
+ *     watchable — `knowledge.retrieve` is the first of them. Naming a runnable is how a
  *     node opts into the feed;
  *   - anything else is an anonymous inner runnable (`RunnableSequence`, `RunnableLambda`)
  *     and is dropped, or the feed would be unreadable.
@@ -279,7 +281,7 @@ async function* streamTurn({ sessionId, message, runId }, deps = {}) {
     if (event.event === "on_chain_start") {
       yield step(label, "start", "");
     } else if (event.event === "on_chain_end") {
-      // A sub-step's output is whatever that runnable returns — for `about_me.prepare`
+      // A sub-step's output is whatever that runnable returns — for `knowledge.prepare`
       // that includes the resolved config, API keys and all. `summarizeUpdate` is a
       // whitelist rather than a serializer precisely so this stays safe: a shape it
       // does not recognise summarizes to nothing.

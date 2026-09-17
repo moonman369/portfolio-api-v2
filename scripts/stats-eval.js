@@ -29,7 +29,7 @@ const QUESTIONS = Object.freeze([
   { id: 2, text: "What is Ayan's LeetCode ranking?", expectRoute: "stats" },
   { id: 3, text: "How many LeetCode problems has he solved, and how many were hard?", expectRoute: "stats" },
   { id: 4, text: "Give me his GitHub stats - repos, commits, stars and pull requests.", expectRoute: "stats" },
-  { id: 5, text: "Show me my github stats and my projects", expectRoute: "stats_and_docs" },
+  { id: 5, text: "Show me my github stats and my projects", expectRoute: "stats" },
 ]);
 
 function parseArgs(argv) {
