@@ -1,7 +1,9 @@
 # Frontend integration brief — MoonMind on portfolio-api-v2
 
-Hand this to the frontend repo. Every shape below was captured from a live run of the API
-on 2026-09-15, not written from memory.
+Hand this to the frontend repo. Every shape below was captured from a live run of the API,
+not written from memory — the endpoint shapes on 2026-09-15, and the step vocabulary in §4
+re-captured on 2026-09-17 after the backend collapsed its route taxonomy from ten labels to
+seven. **If you have an older copy of this file, §3, §4 and §5 changed.**
 
 ---
 
@@ -12,10 +14,10 @@ unchanged and need no frontend work** — `/api/v1/github`, `/api/v1/leetcode/:u
 `/api/v1/refresh` keep their old paths, auth and response shapes exactly.
 
 Only MoonMind chat changes. The old pipeline was a single request that returned a finished
-answer. The new one is an agent graph: a router classifies the question, one of nine
-branches answers it, and the whole thing takes between 2 and 25 seconds depending on the
-route. That latency is why there is now a live event feed — the user should watch it work
-rather than stare at a spinner.
+answer. The new one is an agent graph: a router classifies the question into one of seven
+routes, that branch answers it, and the whole thing takes between 2 and 25 seconds
+depending on the route. That latency is why there is now a live event feed — the user
+should watch it work rather than stare at a spinner.
 
 **Base URL:** `https://api.portfolio.moonman.in`
 **Auth:** every MoonMind endpoint needs a `password: <MOONMIND_PASSWORD>` request header.
@@ -93,7 +95,7 @@ start. Each response returns only the steps after that cursor.
     "steps": [
       { "seq": 1, "node": "router", "type": "start", "ts": "2026-09-15T16:59:28.091Z", "summary": "" },
       { "seq": 2, "node": "router", "type": "end", "ts": "2026-09-15T16:59:30.903Z",
-        "summary": "route=about_me confidence=0.90 slots=cancelsActiveFlow" }
+        "summary": "route=knowledge confidence=0.90 slots=cancelsActiveFlow" }
     ],
     "nextSince": 2
   }
@@ -114,7 +116,7 @@ Still supported. Same request body as `/runs`. Returns `200` with the finished a
 {
   "status": "success",
   "data": {
-    "sessionId": "...", "runId": "...", "route": "about_me",
+    "sessionId": "...", "runId": "...", "route": "knowledge",
     "answer": "<markdown>", "documents": [ ... ]
   }
 }
@@ -155,102 +157,197 @@ score, semantic_score, retrieval_sources, rrf_score, retrieval_score, boost_scor
 `summary_for_embedding` is stripped, `content_full` is always present (`null` when the
 document has none). **If your UI renders documents today, that code needs no changes.**
 
-Routes that do not retrieve — `stats`, `tech_web`, `refusal`, `list_capabilities` — return
-an empty `documents` array. Your source panel should already handle that; the old API
-returned `[]` for a no-match query too.
+Routes that do not retrieve — `agent`, `refusal`, `capabilities`, `greeting`, `action` —
+return an empty `documents` array. Your source panel should already handle that; the old
+API returned `[]` for a no-match query too.
+
+Two notes on which routes populate it:
+
+- **`stats` sometimes does.** A pure numbers question ("how many repos?") returns no
+  documents; a mixed one ("my github stats *and* my projects") returns both the numbers and
+  a full `documents` array. Do not key your source panel on the route name — key it on
+  `documents.length`.
+- **`agent` never does, and cites inline instead.** The agent researches with tools rather
+  than writing to `documents`, so its citations live in the answer markdown as links and
+  document titles. Its tool sources are not currently exposed as a structured field; if you
+  want a source panel for agent answers, say so and the backend will add one.
 
 ---
 
 ## 4. Rendering the live steps
 
-### Step vocabulary
+This section is the complete step vocabulary. Every value listed is exhaustive as of
+2026-09-17 unless it says otherwise, and every trace at the end is a real captured run.
 
 Each step is `{ seq, node, type, ts, summary }`.
 
-`type` is one of:
+### 4.1 `type` — exactly four values
+
+There are four and there will only ever be four; the backend validates against this list.
 
 | `type` | Meaning |
 |---|---|
-| `start` | A node began. `summary` is always `""`. |
-| `end` | A node finished. `summary` carries derived counts. |
-| `tool` | One tool call completed, e.g. a web search. |
-| `error` | A node failed. **The run still produces an answer** — see §5. |
+| `start` | A node or sub-step began. `summary` is **always** `""`. |
+| `end` | It finished. `summary` carries derived counts — see §4.5. |
+| `tool` | One tool call completed. Emitted on completion only; there is no matching `start`. |
+| `error` | A node threw, or a tool failed. **The run still produces an answer** — see §5. |
 
-`node` values you will see today:
+### 4.2 `node` — the graph nodes
 
-| `node` | Suggested label |
+Every run begins with `router` and ends with `generate`. Exactly one branch runs between
+them. Each of these emits `start`, then `end` **or** `error`.
+
+| `node` | When it runs | Suggested label |
+|---|---|---|
+| `router` | Always, first | Understanding your question |
+| `knowledge` | Questions about Ayan — skills, projects, experience, timeline | Searching Ayan's portfolio |
+| `stats` | GitHub/LeetCode numbers, optionally with portfolio documents | Fetching GitHub & LeetCode stats |
+| `agent` | Tech/industry questions needing research | Researching |
+| `action` | Booking or messaging — **stub, answers "not available yet"** | Preparing a response |
+| `refusal` | Off-topic or unsafe requests | Preparing a response |
+| `capabilities` | "What can you do?" | Preparing a response |
+| `greeting` | A bare "hey" with no question | Saying hello |
+| `generate` | Always, last | Writing the answer |
+
+There is one more you are very unlikely to see: **`tech_web`**, a retired label kept alive
+so conversations started before the taxonomy change still resolve. It runs the same code as
+`agent`. Label it identically if it ever appears.
+
+### 4.3 `node` — named sub-steps
+
+A dotted name is a sub-step of the node before the dot. **Nest or indent it — do not treat
+it as a peer.** These emit `start` and `end` only, never `tool` or `error`.
+
+| `node` | Parent | Suggested label |
+|---|---|---|
+| `knowledge.prepare` | `knowledge` | Preparing the search |
+| `knowledge.retrieve` | `knowledge` | Retrieving documents |
+| `knowledge.to_state` | `knowledge` | Collecting results |
+| `agent.scope_check` | `agent` | Checking the topic |
+
+That is the complete list today. A node opts into the feed by naming an internal step, so
+later backend phases may add more — always in `parent.child` form.
+
+### 4.4 `tool` steps
+
+A `tool` step carries the **owning branch** in `node`, not the tool. So a web search during
+research arrives as `node: "agent"`, and the tool's identity is the first token of
+`summary`. In practice only `agent` emits these.
+
+Four tools exist, all read-only:
+
+| Tool | What it does |
 |---|---|
-| `router` | Understanding your question |
-| `about_me` | Searching Ayan's portfolio |
-| `about_me.prepare` | Preparing the search |
-| `about_me.retrieve` | Retrieving documents |
-| `about_me.to_state` | Collecting results |
-| `stats` | Fetching GitHub & LeetCode stats |
-| `stats_and_docs` | Fetching stats and portfolio |
-| `tech_web` | Researching on the web |
-| `tech_web.scope_check` | Checking the topic |
-| `generate` | Writing the answer |
-| `refusal` / `list_capabilities` | Preparing a response |
+| `web_search` | Public web search |
+| `semantic_search` | Ayan's portfolio documents, by meaning |
+| `metadata_filter` | Ayan's portfolio documents, by date/domain/status |
+| `resolve_time` | Turns "last year" into a date range. No I/O |
 
-**Treat this list as open-ended.** More nodes land in later backend phases
-(`book_catchup`, `send_mail`, `complex`, and their sub-steps). A node name you do not
-recognise must render with a humanised fallback — e.g. title-case the segment after the
-last `.` — never blank and never a crash.
+If you want per-tool labels ("Searching the web" vs "Reading the portfolio"), parse the
+token before `->`. Fall back to a generic "Using a tool" for a name you do not recognise —
+more tools may be added.
 
-A dotted name like `about_me.retrieve` is a sub-step of the node before the dot. Nest it,
-or indent it, but do not treat it as a peer of `about_me`.
+### 4.5 `summary` — the grammar
 
-### `summary` strings
+`summary` is **derived**, never prose, and clipped to 200 characters. It is a debug
+affordance: show it muted, or behind a details toggle. **The primary label must come from
+the `node` maps above, not from parsing this.**
 
-`summary` is deliberately terse and is **derived**, not prose. Observed forms:
+| `type` | Shape | Real examples |
+|---|---|---|
+| `start` | always `""` | |
+| `end` | space-joined `key=value` pairs | `route=knowledge confidence=0.90 slots=cancelsActiveFlow` |
+| | | `documents=15` · `answer=1212 chars` |
+| | | `documents=15 stats=requested+github` |
+| | | `candidates=5 answer=1990 chars` |
+| `tool` | `<tool> -> <result shape>` | `web_search -> 5 results` · `resolve_time -> 0 results` |
+| `error` | the error message | `retrieval exploded` · `web_search -> no result` |
 
-```
-route=about_me confidence=0.90 slots=cancelsActiveFlow
-documents=10
-stats=github+leetcode
-stats=github unavailable=1
-candidates=5 answer=1353 chars
-web_search -> 5 results
-```
+The keys that can appear in an `end` summary, in this order: `route`, `confidence`,
+`slots` (**key names only, never values**), `candidates`, `documents`, `stats`,
+`answer=N chars`.
 
-It never contains document text, tool arguments or prompts. It is a debug affordance.
-Show it in a muted/secondary style, or behind a "details" toggle — **the primary label
-should come from the `node` map above, not from `summary`.**
+**Three `end` steps legitimately have an empty `summary`** — these are not bugs, do not
+render them as failures:
 
-### Real examples
+- `knowledge.prepare` and `agent.scope_check` — their output carries no reportable field.
+- `generate` — whenever the branch already produced the answer, which is every templated
+  route (`greeting`, `refusal`, `capabilities`, `action`) and `agent`. For `knowledge` and
+  `stats`, `generate:end` reads `answer=N chars`.
 
-`about_me`, 7.7 seconds end to end:
+### 4.6 What a step never contains
+
+Guaranteed by a whitelist in the backend, not by convention: no document text, no tool
+arguments (not even the model's search query), no prompts, no model output beyond a
+character count, and **no slot values** — only slot key names, because values are the
+visitor's own words. You cannot reconstruct the answer from the feed; read `data.answer`.
+
+### 4.7 Real traces
+
+Captured 2026-09-17. `knowledge`, 11.5s:
 
 ```
  1 start  router
- 2 end    router               route=about_me confidence=0.90 slots=cancelsActiveFlow
- 3 start  about_me
- 4 start  about_me.prepare
- 5 end    about_me.prepare
- 6 start  about_me.retrieve
- 7 end    about_me.retrieve    documents=10
- 8 start  about_me.to_state
- 9 end    about_me.to_state    documents=10
-10 end    about_me             documents=10
+ 2 end    router               route=knowledge confidence=0.90 slots=cancelsActiveFlow
+ 3 start  knowledge
+ 4 start  knowledge.prepare
+ 5 end    knowledge.prepare
+ 6 start  knowledge.retrieve
+ 7 end    knowledge.retrieve   documents=15
+ 8 start  knowledge.to_state
+ 9 end    knowledge.to_state   documents=15
+10 end    knowledge            documents=15
 11 start  generate
-12 end    generate             answer=1124 chars
+12 end    generate             answer=1212 chars
 ```
 
-`tech_web`, 20.1 seconds end to end:
+`agent` with a web search, 8.0s — note the `tool` step is attributed to `agent`:
 
 ```
  1 start  router
- 2 end    router                 route=tech_web confidence=0.90 slots=cancelsActiveFlow
- 3 start  tech_web
- 4 start  tech_web.scope_check
- 5 end    tech_web.scope_check
- 6 tool   tech_web               web_search -> 5 results
- 7 end    tech_web               candidates=5 answer=1353 chars
+ 2 end    router               route=agent confidence=0.90 slots=cancelsActiveFlow
+ 3 start  agent
+ 4 start  agent.scope_check
+ 5 end    agent.scope_check
+ 6 tool   agent                web_search -> 5 results
+ 7 end    agent                candidates=5 answer=1990 chars
  8 start  generate
- 9 end    generate               answer=...
+ 9 end    generate
 ```
 
-Note `tech_web.scope_check` ends with an empty `summary` — that is expected, not a bug.
+`stats` for a mixed "my github stats and my projects", 8.4s — one node, both halves, and
+`documents` is populated:
+
+```
+ 1 start  router
+ 2 end    router               route=stats confidence=0.90 slots=which,withDocuments,cancelsActiveFlow
+ 3 start  stats
+ 4 end    stats                documents=15 stats=requested+github
+ 5 start  generate
+ 6 end    generate             answer=1069 chars
+```
+
+`greeting`, 1.6s — the shortest possible run, and a good one to test your empty-summary
+handling against:
+
+```
+ 1 start  router
+ 2 end    router               route=greeting confidence=1.00 slots=cancelsActiveFlow
+ 3 start  greeting
+ 4 end    greeting             answer=85 chars
+ 5 start  generate
+ 6 end    generate
+```
+
+### 4.8 Rendering rules that follow from all this
+
+- **Never crash on an unknown `node`.** Humanise the fallback: take the segment after the
+  last `.`, replace `_` with spaces, title-case it. The route taxonomy has already changed
+  once and will gain `action` properly in a later phase.
+- **Never crash on an empty `summary`.** See §4.5.
+- **Pair `start` with `end` or `error` by `node`,** not by adjacency — sub-steps interleave
+  with their parent, and the parent's `end` arrives after all of its children's.
+- **An `error` step is a warning, not a terminal state.** See §5.
 
 ---
 
@@ -268,9 +365,13 @@ console, not for the user.
 **Out-of-scope questions return normally.** Ask about medical, legal or financial advice,
 politics, religion or trading and the backend blocks the web search and answers with
 "That one's beyond what MoonMind covers…". This arrives as an ordinary `status: "done"`
-with `route: "tech_web"` and zero documents. It is not an error state.
+with `route: "agent"` and zero documents. It is not an error state. In the feed it looks
+like a run that ends right after `agent.scope_check` with no `tool` step — the guard stops
+it before any search runs.
 
-**Timing.** Measured: `about_me` ≈ 8s, `tech_web` ≈ 20s. `stats` is faster. The server-side
+**Timing.** Measured 2026-09-17: `greeting` ≈ 1.6s, `stats` ≈ 8s, `agent` ≈ 8–10s,
+`knowledge` ≈ 8–12s. `refusal` and `capabilities` are templated and return in about a
+second. A research question that needs several tool calls can reach ~25s. The server-side
 hard cap is 120s, after which the run is closed as `failed`.
 
 ---
@@ -331,8 +432,12 @@ This is point 5 of the brief and the one most likely to go wrong.
 4. A follow-up question on the same `sessionId` demonstrably uses conversation context.
 5. Polling stops on completion, on unmount, and at the timeout cap.
 6. An unknown future `node` name renders with a readable fallback label.
-7. GitHub and LeetCode widgets are untouched and still work.
-8. No console errors, no leaked intervals.
+7. A `greeting` ("hey") renders cleanly despite two of its six steps having an empty
+   `summary` — the shortest run, and the one most likely to expose a rendering assumption.
+8. A mixed question ("my github stats and my projects") renders both the numbers and the
+   source documents, on route `stats`.
+9. GitHub and LeetCode widgets are untouched and still work.
+10. No console errors, no leaked intervals.
 
 ---
 
