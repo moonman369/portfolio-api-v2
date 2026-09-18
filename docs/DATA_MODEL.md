@@ -109,7 +109,7 @@ validator and (via `.strict()`) in the zod schema: any unknown key is rejected.
 | Field | Type | DB | API | Notes |
 |---|---|---|---|---|
 | `domain` | enum | **required** | **required** | `ALLOWED_DOMAINS`, **plural**. Must equal `CATEGORY_DOMAIN_MAP[category]` — enforced API-side only. |
-| `subcategory` | enum[] | **required** | **required** (defaults to `[]`) | Every element from `ALLOWED_SUBCATEGORIES` (78 values). |
+| `subcategory` | enum[] | **required** | **required** (defaults to `[]`) | Every element from `ALLOWED_SUBCATEGORIES`. The count grows — read `taxonomy.js`, and see §8 for keeping the DB validator in step. |
 | `verified` | bool | **required** | **required** | Non-nullable. |
 | `proficiency_level` | enum \| null | **required** (nullable) | **required** (nullable) | `beginner \| intermediate \| advanced \| expert \| null`. Key must be present; `null` is normal (the live sample has `null`). |
 | `organization` | string \| null | **required** (nullable) | **required** (nullable), 1–160 chars | `null` is normal. |
@@ -302,8 +302,16 @@ create/update. This is the layer that actually rejects bad payloads today.
 `moonmind_documents_v3` currently **has no validator**. The re-embed paths skip
 `ensureStorage()` deliberately, so a legacy out-of-enum document can still be re-embedded.
 
-**Conclusion for the rewrite: do not rely on DB-side enforcement.** `src/documents/schema.js`
-is the gate. It must enforce, in application code:
+> **Corrected 2026-09-18 — that last claim is false, and was false when written.** The
+> live collection **does** carry a `$jsonSchema` validator, at `validationLevel: strict`
+> and `validationAction: error`. The old comment was describing a failed `collMod` under
+> some other credential; the validator installed at collection-creation time was there all
+> along. This surfaced when an ingestion attempt returned
+> `code: 121, Document failed validation` — an error that names no field — for a document
+> the application had already accepted. See §8.
+
+**Do not rely on DB-side enforcement *alone*.** `src/documents/schema.js`
+is the gate for readable errors. It must enforce, in application code:
 
 1. Every field constraint in §3.
 2. `metadata.domain === CATEGORY_DOMAIN_MAP[category]`.
@@ -386,3 +394,45 @@ See §4.4. The rewrite should either add a category that maps to it or drop it f
 `ALLOWED_DOMAINS` — **but not before checking whether any live document already carries
 it**, since documents predating the current map may exist. Until that check runs, keep the
 value in the enum.
+
+---
+
+## 8. Keeping the two vocabularies in sync
+
+The controlled vocabularies exist in two places that MongoDB has no way to reconcile for
+you:
+
+| Where | What enforces it | Failure mode |
+|---|---|---|
+| `src/documents/taxonomy.js` | `validateDocument()`, before the write | 400 naming the offending field and value |
+| The collection's `$jsonSchema` | MongoDB, at write time | `code: 121, Document failed validation` — **names nothing** |
+
+**`taxonomy.js` is the source of truth. The validator is generated from it.** Run
+`scripts/sync-document-validator.js` after changing any vocabulary:
+
+```
+node --env-file=.env scripts/sync-document-validator.js          # show the diff
+node --env-file=.env scripts/sync-document-validator.js --apply  # write it
+node --env-file=.env scripts/sync-document-validator.js --check  # exit 1 on drift
+```
+
+It patches only the four enum arrays and writes every other rule back untouched, prints
+the previous validator as a rollback artifact, and re-reads the schema afterwards to
+confirm — `collMod` reports success on a no-op too.
+
+**Why the direction of drift matters.** If the app's list is a *superset* of the DB's, a
+value passes application validation and dies at the database with an error that identifies
+no field. If the DB's is a superset, you get a readable 400 instead. The app being ahead is
+the bad direction, and it is the one that happens naturally, because adding a value to a JS
+file is easy and running a migration is a separate thought.
+
+**Adding is safe; removing is not.** Widening an enum cannot invalidate a stored document.
+Narrowing one can, and nothing re-validates existing rows — a `validationLevel: strict`
+collection only checks on write, so a now-illegal document sits there until something
+updates it and then fails. The script flags removals loudly; check the collection before
+accepting one.
+
+**History.** The vocabularies drifted to 85 (app) against 78 (DB) on 2026-09-18 when seven
+agentic-AI subcategories were added for an EY GDS experience document. The symptom was an
+opaque 121 on ingestion. Fixed by this script; §6's claim that the collection has no
+validator was corrected at the same time.

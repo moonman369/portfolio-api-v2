@@ -3,8 +3,14 @@
 // The controlled vocabularies for `moonmind_documents_v3`, and the single source for
 // them across ingestion, validation, retrieval planning and any future tool.
 //
-// Values are reproduced exactly from the live collection. Two look like typos and are
-// not: `data structures` carries a space where everything else is kebab-case, and
+// **This file is the source of truth, and the collection's `$jsonSchema` validator is
+// generated from it** — run `scripts/sync-document-validator.js` after changing anything
+// here. The two used to be maintained separately, which meant adding a value here made
+// the app accept a document the database then rejected with an opaque
+// `code: 121, Document failed validation` naming no field. See DATA_MODEL.md §8.
+//
+// The original values were transcribed from the live collection. Two look like typos and
+// are not: `data structures` carries a space where everything else is kebab-case, and
 // `fullstack` and `full-stack` are separate values. Existing documents use these
 // strings, so "tidying" them would orphan data.
 
@@ -41,7 +47,7 @@ const ALLOWED_PROFICIENCY_LEVELS = Object.freeze([
   "expert",
 ]);
 
-/** 78 values spanning technical skills, soft skills and meta tags. */
+/** Technical skills, soft skills and meta tags. Grew from 78 to 85 on 2026-09-18. */
 const ALLOWED_SUBCATEGORIES = Object.freeze([
   "programming-language", "backend", "frontend", "fullstack", "database", "devops",
   "cloud", "architecture", "api-design", "system-design", "distributed-systems",
@@ -58,6 +64,15 @@ const ALLOWED_SUBCATEGORIES = Object.freeze([
   "gaming", "learning", "ai-development", "agent-sdk", "prompt-engineering", "llm",
   "claude", "anthropic", "ai-agents", "mcp", "claude-api", "data structures", "practice",
   "ai-evaluation", "interview-preparation", "full-stack", "software-development",
+  // Added 2026-09-18 for the EY GDS agentic-AI work.
+  "azure-ai", "azure-foundry", "microsoft-agent-framework", "agentic-workflows",
+  "agent-orchestration", "agentic-ai", "ai-engineering",
+  // Added 2026-09-18. Named technologies rather than concepts: the older values sit a
+  // level up (`programming-language`, `cloud`) and left specifics to free-form `tags`.
+  // Adding these makes a language or platform filterable via `metadata_filter`, which
+  // tags are not — so the ones that matter should be added deliberately, not as they
+  // come up, or filtering is reliable for Python and silently useless for Java.
+  "python", "azure",
 ]);
 
 /**
