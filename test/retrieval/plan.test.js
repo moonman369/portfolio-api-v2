@@ -5,7 +5,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { decomposeQuery, planQuery, deterministicPlan } = require("../../src/retrieval/plan");
+const { decomposeQuery, planQuery, deterministicPlan, isSmallTalk } = require("../../src/retrieval/plan");
 const { ALLOWED_SUBCATEGORIES } = require("../../src/documents/taxonomy");
 
 const CONFIG = Object.freeze({
@@ -162,6 +162,49 @@ test("no retrieval means every arm is off", async () => {
   const plan = await planQuery("hello", { ...cfg, model: modelPlan({ requires_retrieval: false }) });
 
   assert.deepEqual(plan.retrieval_plan, { semantic: false, keyword: false, metadata: false });
+});
+
+test("the model cannot switch retrieval off for a real question", async () => {
+  // The live failure: gpt-4o-mini read "Tell me something about Ayan" — the most likely
+  // opening question on the site — as small talk, so no arm ran and the answer was
+  // written from nothing, ending "I have no matching documents". `requires_retrieval:
+  // false` is the one classification here with no failure path, because returning
+  // nothing is a *successful* result, so it gets a deterministic second opinion.
+  const offForEverything = modelPlan({ requires_retrieval: false });
+
+  for (const question of [
+    "Tell me something about Ayan",
+    "Who is Ayan?",
+    "tell me about his work",
+    "what is he like",
+  ]) {
+    const plan = await planQuery(question, { ...cfg, model: offForEverything });
+    assert.equal(plan.requires_retrieval, true, `"${question}" must still retrieve`);
+    assert.equal(plan.retrieval_plan.semantic, true);
+  }
+});
+
+test("the model can still switch retrieval off for an actual greeting", async () => {
+  // The guard is a second opinion, not an override: when both agree it is small talk,
+  // retrieval stays off and the turn costs nothing.
+  for (const greeting of ["hi", "hello!", "hey", "thanks", "how are you?"]) {
+    const plan = await planQuery(greeting, {
+      ...cfg,
+      model: modelPlan({ requires_retrieval: false }),
+    });
+    assert.equal(plan.requires_retrieval, false, `"${greeting}" should not retrieve`);
+  }
+});
+
+test("isSmallTalk matches only a message that is nothing but a pleasantry", () => {
+  ["hi", "  hello!  ", "hey", "thanks", "thank you", "how are you?"].forEach((value) =>
+    assert.equal(isSmallTalk(value), true, value),
+  );
+
+  // The anchoring is the whole point — these contain a greeting but ask for something.
+  ["hi, who is Ayan?", "hello tell me about his projects", "thanks, what else?"].forEach((value) =>
+    assert.equal(isSmallTalk(value), false, value),
+  );
 });
 
 test("an out-of-vocabulary domain or subcategory from the model is discarded", async () => {
