@@ -77,6 +77,23 @@ test("the regex table recognises the obvious domains", () => {
   assert.equal(deterministicPlan("what is the weather").domain, null);
 });
 
+test("interests route to `personal`, and work questions still route to `experience`", () => {
+  // `hobby`/`hobbies` predates `personal` and holds no documents, so sending an
+  // interests question there filters the metadata arm down to nothing.
+  ["what are his hobbies?", "does he play any sports?", "what music is he into?"].forEach(
+    (question) => assert.equal(deterministicPlan(question).domain, "personal", question),
+  );
+
+  // "outside work" contains `work`, and the experience rule matches that. It is listed
+  // first for exactly this reason — first match wins.
+  assert.equal(deterministicPlan("what does he do outside work?").domain, "personal");
+  assert.equal(deterministicPlan("what does he do in his free time?").domain, "personal");
+
+  assert.equal(deterministicPlan("tell me about his work experience").domain, "experience");
+  assert.equal(deterministicPlan("what is his current role?").domain, "experience");
+  assert.equal(deterministicPlan("what are his research interests?").domain, "research");
+});
+
 test("the regex table only emits subcategories in the vocabulary", () => {
   const plan = deterministicPlan("backend rag work with vector databases and azure cloud");
 

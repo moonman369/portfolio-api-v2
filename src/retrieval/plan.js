@@ -70,6 +70,10 @@ const PLAN_PROMPT = [
 // ---------------------------------------------------------------------------
 
 const DOMAIN_RULES = Object.freeze([
+  // First, because `.find()` takes the first match and these phrases cannot mean
+  // anything else — "outside work" would otherwise hit the `\bwork\b` in the experience
+  // rule below and filter to the wrong half of the corpus.
+  [/\boutside\s+(?:of\s+)?work\b|\b(?:free|spare)\s+time\b|\bwhen\s+he'?s\s+not\s+working\b/i, "personal"],
   [/\bskills?\b|\btech\s*stack\b|\bstrengths?\b/i, "skills"],
   [/\bprojects?\b|\bbuilt?\b|\bimplemented\b/i, "projects"],
   [/\bexperiences?\b|\bwork\b|\brole\b|\bjob\b/i, "experience"],
@@ -78,7 +82,13 @@ const DOMAIN_RULES = Object.freeze([
   [/\beducation\b|\bdegree\b|\buniversity\b|\bcollege\b/i, "education"],
   [/\bachievements?\b|\bawards?\b/i, "achievements"],
   [/\bresearch\b|\bpapers?\b|\bpublications?\b/i, "research"],
-  [/\bhobbies\b|\binterests?\b|\bgaming\b/i, "hobbies"],
+  // `personal`, not `hobbies`: the `hobby`/`hobbies` pair predates it and holds no
+  // documents, so routing an interests question there filters the metadata arm down to
+  // nothing. See the note on CATEGORY_DOMAIN_MAP in documents/taxonomy.js.
+  [
+    /\bhobbies\b|\binterests?\b|\bgaming\b|\bmusic\b|\bmovies?\b|\bweb[-\s]?series\b|\bfitness\b|\bworkouts?\b|\bbadminton\b|\bsports?\b/i,
+    "personal",
+  ],
 ]);
 
 const SUBCATEGORY_RULES = Object.freeze([
