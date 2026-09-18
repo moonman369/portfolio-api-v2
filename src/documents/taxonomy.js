@@ -25,6 +25,10 @@ const ALLOWED_CATEGORIES = Object.freeze([
   "project",
   "hobby",
   "topic",
+  // Added 2026-09-18. Life outside work: interests, fitness, entertainment, the
+  // curiosity-driven rabbit holes. Broader than `hobby`, which it supersedes in
+  // practice — see the note on CATEGORY_DOMAIN_MAP.
+  "personal",
 ]);
 
 /** `metadata.domain` — plural. A different word for the same concept, by design. */
@@ -38,6 +42,8 @@ const ALLOWED_DOMAINS = Object.freeze([
   "achievements",
   "research",
   "hobbies",
+  // Added 2026-09-18, paired with the `personal` category.
+  "personal",
 ]);
 
 const ALLOWED_PROFICIENCY_LEVELS = Object.freeze([
@@ -73,6 +79,11 @@ const ALLOWED_SUBCATEGORIES = Object.freeze([
   // tags are not — so the ones that matter should be added deliberately, not as they
   // come up, or filtering is reliable for Python and silently useless for Java.
   "python", "azure",
+  // Added 2026-09-18 for the `personal` category: interests outside work. `hobbies` is
+  // also a domain name — the two vocabularies are independent, and a `personal` document
+  // legitimately carries the subcategory `hobbies` under the domain `personal`.
+  "hobbies", "programming", "music", "fitness", "sports", "movies", "web-series",
+  "conspiracy-theories", "urban-legends", "creepypasta", "internet-mysteries",
 ]);
 
 /**
@@ -82,6 +93,13 @@ const ALLOWED_SUBCATEGORIES = Object.freeze([
  * Note `topic -> research`, the one mapping nothing about the words suggests, and that
  * `achievements` is unreachable: no category maps to it, so no document written through
  * this path can carry it. See docs/DATA_MODEL.md §4.
+ *
+ * **`hobby` and `personal` overlap, deliberately for now.** `personal` was added
+ * 2026-09-18 as the broader home for life outside work, and it is where that content
+ * actually goes. `hobby`/`hobbies` predates it and has **zero documents in the live
+ * collection**, so retiring the pair is a free removal whenever someone decides to —
+ * unlike most enum removals, nothing stored would become invalid. Until then, prefer
+ * `personal`; the deterministic domain rules in `retrieval/plan.js` point there.
  */
 const CATEGORY_DOMAIN_MAP = Object.freeze({
   skill: "skills",
@@ -93,6 +111,7 @@ const CATEGORY_DOMAIN_MAP = Object.freeze({
   project: "projects",
   hobby: "hobbies",
   topic: "research",
+  personal: "personal",
 });
 
 /** The domain a category requires, or undefined for an unknown category. */
