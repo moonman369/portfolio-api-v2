@@ -53,7 +53,11 @@ const PLAN_PROMPT = [
   "`domain` must be one of the allowed domains, or null if the question is not about a",
   "specific area of his portfolio.",
   "`subcategories` must come from the allowed list; leave it empty when nothing fits.",
-  "`requires_retrieval` is false only for greetings and small talk.",
+  "`requires_retrieval` is false ONLY for a bare greeting or pleasantry that asks for",
+  'nothing at all - "hi", "thanks", "how are you". ANY request for information about Ayan',
+  'is true, however short, casual or open-ended: "tell me something about Ayan", "who is',
+  'he", "what is he like", "tell me about his work" are all true. When in doubt, choose',
+  "true - answering from nothing is far worse than retrieving loosely.",
   "`keyword_useful` is true only when an exact term must match literally - a product",
   "name, an acronym, a specific technology - not for general questions.",
   "Extract entities only when explicitly named. Never invent vague labels like",
@@ -100,6 +104,16 @@ const NO_RETRIEVAL_PATTERNS = Object.freeze([
   /^\s*(?:how are you|what'?s up|thanks|thank you)[\s!,.?]*$/i,
 ]);
 
+/**
+ * A bare greeting or pleasantry, anchored so it only matches a message that is *nothing
+ * else*. "Tell me something about Ayan" is not small talk, however conversational it
+ * sounds — and that distinction is load-bearing, see `planQuery`.
+ */
+function isSmallTalk(query) {
+  const text = String(query ?? "").trim();
+  return NO_RETRIEVAL_PATTERNS.some((pattern) => pattern.test(text));
+}
+
 function deterministicPlan(query) {
   const text = String(query ?? "").trim();
 
@@ -111,7 +125,7 @@ function deterministicPlan(query) {
   return {
     domain,
     subcategories: [...new Set(subcategories)],
-    requires_retrieval: !NO_RETRIEVAL_PATTERNS.some((pattern) => pattern.test(text)),
+    requires_retrieval: !isSmallTalk(text),
     keyword_useful: false,
     entities: { skills: [], projects: [], certifications: [], organizations: [] },
     dates: { from: null, to: null },
@@ -206,7 +220,18 @@ async function planQuery(query, deps = {}) {
       {
         domain: ALLOWED_DOMAINS.includes(result.domain) ? result.domain : null,
         subcategories: (result.subcategories ?? []).filter((value) => SUBCATEGORY_SET.has(value)),
-        requires_retrieval: result.requires_retrieval,
+        // The model only gets to switch retrieval OFF when the deterministic rule agrees
+        // it is a bare greeting. `requires_retrieval: false` zeroes the whole pipeline —
+        // no arm runs, no document is returned, and the answer is written from nothing —
+        // and unlike every other stage here it has no failure path, because returning
+        // nothing is a *successful* classification. gpt-4o-mini read "Tell me something
+        // about Ayan" as small talk and produced exactly that: the single most likely
+        // opening question on the site, answered with "I have no matching documents".
+        //
+        // Since Phase 6.5 the router has a dedicated `greeting` route, so a real greeting
+        // never reaches retrieval at all — which makes this flag nearly dead weight, and
+        // makes honouring it unchecked pure downside.
+        requires_retrieval: result.requires_retrieval !== false || !isSmallTalk(query),
         keyword_useful: result.keyword_useful,
         entities: result.entities ?? {
           skills: [],
@@ -225,6 +250,7 @@ async function planQuery(query, deps = {}) {
 }
 
 module.exports = {
+  isSmallTalk,
   decomposeQuery,
   planQuery,
   deterministicPlan,

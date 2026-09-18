@@ -1206,6 +1206,17 @@ with the reason. Append as they arise.)*
     continues, and a comment states the live collection has no validator. Application-side
     `validateDocument()` is the real gate, and it adds the `embedding.length === 768` check
     that no existing layer performs.
+    **Superseded 2026-09-18 — the premise was wrong.** The live collection *does* carry a
+    `$jsonSchema` validator, `strict`/`error`. It surfaced when ingestion returned
+    `code: 121` for a document the application had accepted: seven subcategories had been
+    added to `taxonomy.js` (85) without the DB enum following (78). Both statements in the
+    original deviation still hold — `validateDocument()` is the only layer that checks
+    `embedding.length`, and it is the only one that produces a readable error — but "do
+    not rely on the DB" was the wrong conclusion. The DB *does* enforce, and it is the
+    stricter of the two whenever the app runs ahead. `taxonomy.js` is now the source of
+    truth and `scripts/sync-document-validator.js` regenerates the validator's enums from
+    it; DATA_MODEL.md §8 documents the workflow and why app-ahead-of-DB is the dangerous
+    direction.
 11. **`/refresh` no longer has a `useWorker` mode.** *Why:* the old worker path is dead —
     `refresh_worker.js`'s `parentPort.on("message")` handler is commented out, so
     `useWorker=true` returned "Refresh worker has been triggered successfully..." while
