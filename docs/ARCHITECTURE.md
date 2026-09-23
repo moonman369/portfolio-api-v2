@@ -274,8 +274,8 @@ Phase 7 reconciled them, and this is the order:
 6. **`refusal`** — unknown and unmapped.
 
 **`activeFlow` is dormant.** Nothing sets it today, so step 3 never fires and the live
-order is 1, 2, 4, 5, 6. The field and its stickiness are kept because Phase 9's mail flow
-is the first thing that will set it; whether `book` needs it too is a Phase 9 decision.
+order is 1, 2, 4, 5, 6. The field and its stickiness are kept because Phase 10's mail flow
+is the first thing that will set it; whether `book` needs it too is a Phase 10 decision.
 
 **Testable offline.** `buildGraph` takes injected nodes and dependencies, so `test/agent/`
 exercises the whole graph with fake models and fake services — no network, no keys.

@@ -217,13 +217,44 @@ alongside `refusal`.
 **Done when:** the ten new single prompts and the two-turn pronoun conversation are in
 `scripts/router-eval.js` and pass; the existing eval and 6.5's fixture do not regress.
 
-### `[ ]` Phase 9 — `action` node (`book` | `mail`)
-**⛔ GATE first — questions for Ayan, recorded in Decisions and CLAUDE.md:** (1)
-scheduling-link provider (hosted, e.g. Calendly-style — no `check_free_busy`/`create_event`
-tool, no calendar integration); (2) email provider (HTTP API — Resend/SendGrid — over
-SMTP, recipient fixed via `MOONMIND_OWNER_EMAIL`, never a tool argument); (3) how a visitor
-is shown the link/confirmation; (4) whether either branch needs multi-turn `slots` state at
-all, given both are now deterministic and single-turn (ARCHITECTURE.md §5).
+*Numbering corrected 2026-09-23 (Ayan). This checklist had put the `action` node at
+Phase 9, which dropped the `knowledge` → `agent` escalation out of the plan entirely,
+though Phases 7 and 8 both handed it to Phase 9. The playbook numbering is: **9 =
+escalation hop, 10 = action node, 11 = cutover + final structure audit.** Nothing already
+completed was renumbered; handoff entries before this date that say "Phase 9's action" or
+"Phase 9's mail flow" mean Phase 10.*
+
+### `[ ]` Phase 9 — Escalation hop (`knowledge` → `agent`, once per turn)
+**Before the hop, in order:** (1) this numbering fix and two standing decisions (see
+Decisions, 2026-09-23); (2) close Phase 8's unmet exit condition — the agent's sources in
+the `/chat` response, committed separately as `phase-8: surface agent sources`; (3) set
+the retrieval gate (`MOONMIND_MIN_SEMANTIC_SCORE`, `k`) from the Phase 6 data.
+**⛔ GATE after (3):** the current per-arm score distribution and per-query document counts
+go to Ayan, who decides the floor, before the trigger is built.
+**Scope:** `escalations` in state, reset per turn. `knowledge` flags `escalate` when
+retrieval is weak against the gated floor, or when the question needs current / market /
+industry framing — deterministic and config-driven, no extra LLM call. Conditional edge
+`knowledge → agent | generate`, allowed only while `escalations < 1`, incremented on the
+hop. `agent` never escalates; no other node gains the edge. The hop is a step in the
+Phase 4 feed. The agent receives the documents `knowledge` already retrieved **and** the
+conversation history.
+**Done when:** the floor is set from data and recorded, and a narrow query no longer
+returns the whole corpus; an offline test proves the hop fires once and only once (a node
+that always reports weak results still terminates with `escalations === 1`); the Phase
+3b set and the Phase 7 "AI skills evolved" baseline never escalate; "AI projects + market
+relevance today" escalates and returns a web-grounded answer, before/after in
+`docs/evals/escalation.md`; a `stats` + `withDocuments` question does **not** escalate
+and a test says so; the recursion limit is never reached in any test.
+
+### `[ ]` Phase 10 — `action` node (`book` | `mail`)
+**Providers named by the playbook:** a Calendly scheduling link for `book`, Web3Forms for
+`mail`.
+**⛔ GATE first — still open for Ayan:** (1) the Calendly link, and the env var that holds
+it; (2) Web3Forms confirmed as the mail provider — the recipient is bound to the access
+key server-side, which satisfies "recipient fixed by config, never a tool argument";
+(3) how a visitor is shown the link / confirmation; (4) whether either branch needs
+multi-turn `slots` state at all, given both are deterministic and single-turn
+(ARCHITECTURE.md §5).
 **Scope:** `src/integrations/email.js` (plain JS, timeout); one `action` node, no agent,
 branching internally on `slots.action` (`'book'` | `'mail'`). `book` returns a templated
 scheduling link deterministically — no tool, no confirmation step. `mail` sends via
@@ -233,23 +264,23 @@ superseded Phase 6a/6b plan. Tight per-IP + sessionId rate limits for the action
 **Done when:** both branches covered by offline tests; `send_email`'s schema has no
 recipient; "send this to someone@else.com" still reaches only Ayan; the rate limit trips.
 
-### `[ ]` Phase 10 — Structure audit + monitoring
+### `[ ]` Phase 11 — Cutover + final structure audit
+**Due BEFORE this phase starts, not at it:** Phase 0's CI/CD deploy and live parity run
+(see Phase 0 open items 1-5). Everything since Phase 0 was built against an unverified
+base; cutover is the wrong moment to find out the base was wrong.
 **Scope:** structure audit against ARCHITECTURE.md — layout, dependency direction,
 framework boundary, file sizes, grab-bag modules, unused deps; fix small drift, report
-anything larger and wait. Monitoring: per-run route, per-node latency, errors, tool-call
-counts, reusing `runs`/`steps`, plus a summary script or endpoint.
-**Done when:** the audit is clean or its exceptions are explicitly recorded; monitoring
-surfaces per-route/per-node stats from real run data.
-
-### `[ ]` Phase 11 — Cutover
-**Scope:** `docs/CUTOVER.md`: the exact frontend change (separate repo — instructions
-only), rollback plan, monitoring checklist, agreed zero-traffic period. Regression: run
-every eval script against production.
+anything larger and wait. `docs/CUTOVER.md`: the exact frontend change (separate repo —
+instructions only), rollback plan, monitoring checklist, agreed zero-traffic period.
+Regression: run every eval script against production. *Carried in from the old Phase 10,
+and not named by the playbook's one-line summary — confirm it stays:* per-run route,
+per-node latency, errors and tool-call counts from `runs`/`steps`, plus a summary script
+or endpoint.
 **⛔ GATE:** decommissioning the old MoonMind pipeline happens in the old repo only after
 Ayan confirms zero traffic for the agreed period. Don't touch that repo from here — write
 the steps into CUTOVER.md for a separate session.
-**Done when:** evals pass in production, CUTOVER.md is complete, and Ayan has switched the
-frontend.
+**Done when:** the audit is clean or its exceptions are explicitly recorded; evals pass in
+production, CUTOVER.md is complete, and Ayan has switched the frontend.
 
 ---
 
@@ -1221,6 +1252,19 @@ committed as a script — it would just become more examples to tune against.
   before this, "never mind" could still be overridden by 6.5's inheritance on a
   low-confidence turn. `activeFlow` outranks inheritance because it means a node is
   waiting on an answer, not merely that the last turn went somewhere.
+
+- **2026-09-23 — Mixed stats+portfolio questions stay on `stats`** (Ayan, closing Phase 7
+  open item 2). **Accepted limitation:** a question routed to `stats` +
+  `slots.withDocuments` cannot reach Phase 9's escalation hop, because that edge runs from
+  `knowledge`. It only bites a three-part question — numbers **and** documents **and**
+  market framing — which is rare. Moving the mixed path to `knowledge` would grow that
+  node a stats branch: new behaviour, in a phase that already changes graph topology.
+  Revisit only if real traffic shows the gap.
+- **2026-09-23 — Phase 0's deploy and live parity run are due before Phase 11, not at
+  it** (Ayan). Phase 0 was ticked without them (2026-09-12) and every phase since has
+  been built on an unverified base. Recorded as an open item on Phase 11's checklist.
+- **2026-09-23 — Phase numbering restored** (Ayan): 9 = escalation hop, 10 = action
+  node, 11 = cutover + final structure audit. See the note above Phase 9's checklist.
 
 ---
 
