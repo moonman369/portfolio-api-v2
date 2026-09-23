@@ -50,6 +50,14 @@ const LABELLED_PROMPTS = Object.freeze({
     "How has Ayan upskilled in AI since 2023?",
     "Compare his backend skills in 2023 versus now",
     "What AI projects has he built and how relevant are they to the market today?",
+    // Phase 7.1: third person about Ayan, including "you" used only as the request verb.
+    // The first two returned the capability menu live.
+    "what can this guy do?",
+    "what can he do for me",
+    "what does he specialise in",
+    "can you tell me about his projects",
+    "what can you tell me about Ayan",
+    "tell me what they've built",
   ],
   stats: [
     "How many GitHub repos does Ayan have?",
@@ -74,6 +82,8 @@ const LABELLED_PROMPTS = Object.freeze({
       text: "His leetcode count plus the projects that show that problem solving",
       slots: { withDocuments: true },
     },
+    // Phase 7.1: pronoun-only subject
+    "how many repos does he have",
   ],
   agent: [
     "What's new in LangGraph this year?",
@@ -97,6 +107,10 @@ const LABELLED_PROMPTS = Object.freeze({
     "What can you do?",
     "Who are you?",
     "What kinds of questions can I ask here?",
+    // Phase 7.1: second person about the bot's own features
+    "what can you do",
+    "what are your capabilities",
+    "how do you work",
   ],
   greeting: [
     "Hey!",
@@ -193,6 +207,23 @@ const CONVERSATIONS = Object.freeze([
         text: "What's new in LangGraph this year?",
         expect: "agent",
         reply: "LangGraph shipped a v1 release this year...",
+      },
+    ],
+  },
+  {
+    // Phase 7.1: "he" in a conversation about Ayan is Ayan, not the assistant.
+    name: "pronoun follow-up stays on Ayan",
+    turns: [
+      {
+        text: "Tell me about Ayan",
+        expect: "knowledge",
+        reply:
+          "Ayan Maiti is a Systems Engineer at Tata Consultancy Services, building Azure-based integration systems, with side projects in generative AI such as MoonMind AI and CodeSage.",
+      },
+      {
+        text: "what else can he do?",
+        expect: "knowledge",
+        reply: "Beyond integration work, Ayan builds full-stack apps and has done blockchain and AI agent projects.",
       },
     ],
   },

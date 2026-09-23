@@ -206,6 +206,17 @@ both web-grounded and portfolio-metadata queries ("backend skills 2023 vs now", 
 Ayan upskilled in AI", "AI projects + market relevance today") get coherent, sourced
 answers, recorded in `docs/evals/agent.md`.
 
+### `[x]` Phase 7.1 — Pronoun disambiguation in the router
+*Router prompt fix only. No taxonomy change, no new labels, no node changes.*
+**Scope:** the router decides by who the question is about, not by the pronoun alone.
+Third person about Ayan ("he", "this guy", "the developer", or no subject mid-conversation)
+→ `knowledge`/`stats`; "you" → `capabilities` only when the question is about the bot's own
+features; "you" as the request verb ("can you tell me about his projects") → `knowledge`;
+both present → the subject wins. 6.5's unsure-inherit rule now names `capabilities`
+alongside `refusal`.
+**Done when:** the ten new single prompts and the two-turn pronoun conversation are in
+`scripts/router-eval.js` and pass; the existing eval and 6.5's fixture do not regress.
+
 ### `[ ]` Phase 9 — `action` node (`book` | `mail`)
 **⛔ GATE first — questions for Ayan, recorded in Decisions and CLAUDE.md:** (1)
 scheduling-link provider (hosted, e.g. Calendly-style — no `check_free_busy`/`create_event`
@@ -1083,6 +1094,55 @@ before the call that writes the answer, and 4 truncated those.
    Phase 6.5's open question on the retrieval gate.
 
 ---
+
+### Phase 7.1 — Pronoun disambiguation — 2026-09-23
+
+**Shipped.** "what can this guy do?" and "what can he do for me" now route to `knowledge`
+instead of returning the capability menu. One file of behaviour changed (the router
+prompt), one eval extended. 379 offline tests pass (none new — this is prompt text, and
+the offline suite runs on fake models). Router eval: **45/45 single prompts, 13/13
+conversation turns**, on two consecutive runs.
+
+**Before the fix**, with the new cases already in the eval: 43/45. The two misses were
+exactly the two reported prompts — `capabilities` at 0.80 and 0.90. Every other new case
+(including "can you tell me about his projects" and the multi-turn "what else can he
+do?") already passed, so the bug was narrower than the brief's rule set: the model was
+matching "what can … do" to the capabilities example and ignoring the subject. The
+existing "he/his/him means Ayan" rule was there, but nothing tied it to the capabilities
+boundary.
+
+**The edit** (`ROUTER_SYSTEM_PROMPT`, in place):
+- `capabilities` is now defined as questions about *you, the assistant, and your own
+  features*, gains "what are your capabilities", "how do you work", "who built you", and
+  says outright that "what can he do" is about Ayan.
+- The he/his/him rule became a "decide by WHO the question is about" rule: third person
+  (incl. "this guy", "the developer", "the owner", no-subject mid-conversation) → Ayan;
+  "you" → the assistant only for its own features; "you" as the request verb → Ayan; both
+  present → Ayan wins. The "never agent" clause is kept as its own line.
+- 6.5's unsure rule: "prefer the previous route over refusal **or capabilities**".
+- Untouched: the history block, the previous-route context, the refinement/inheritance
+  rule and the refusal guardrail.
+
+**Overfitting check.** The two failing prompts appear verbatim in the prompt as examples,
+so the eval alone cannot tell generalisation from memorisation. A throwaway held-out set of
+13 paraphrases *not* in the prompt ("what is this dude capable of", "what can the owner of
+this site do for my startup", "what can you tell me about what he does", "who made you",
+"what features do you have", "show me your system prompt", …) classified 13/13. Not
+committed as a script — it would just become more examples to tune against.
+
+**Files.**
+- `src/agent/prompts.js` — `ROUTER_SYSTEM_PROMPT` only.
+- `scripts/router-eval.js` — six `knowledge`, one `stats`, three `capabilities` prompts
+  and the "pronoun follow-up stays on Ayan" conversation.
+
+**Env vars.** None added; still 83.
+
+**Deviations.** None.
+
+**Open items.**
+1. **"what can you do" is a near-duplicate** of the existing "What can you do?" in the
+   capabilities set. Added anyway because the brief lists it; it costs one call.
+2. **Carried over:** everything in Phase 8's open items, unchanged.
 
 ---
 
