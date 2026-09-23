@@ -296,3 +296,128 @@ test("the run viewer is served and / is still the JSON banner", async () => {
     assert.equal((await root.json()).service, "portfolio-api-v2");
   });
 });
+
+// ---------------------------------------------------------------------------
+// The agent's sources (Phase 8's exit condition, surfaced 2026-09-23)
+// ---------------------------------------------------------------------------
+
+const { toResponseSources } = require("../../src/http/chat");
+
+// Exactly what the agent's tools put in `searchResults`: web results from web_search,
+// `{ id, title, kind: "document" }` from the two document tools.
+const AGENT_SOURCES = [
+  { title: "LangGraph v1", url: "https://example.com/langgraph", content: "Released...", score: 0.9, publishedDate: null },
+  { id: "doc-1", title: "MoonMind AI", kind: "document" },
+  { title: "LangGraph v1 again", url: "https://example.com/langgraph", content: "dup", score: 0.5 },
+  { id: "doc-1", title: "MoonMind AI", kind: "document" },
+];
+
+// The keys every `documents` entry carries (FRONTEND_INTEGRATION.md §3).
+const DOCUMENT_KEYS = [
+  "id", "title", "category", "tags", "content_full", "metadata",
+  "score", "semantic_score", "retrieval_sources", "rrf_score", "retrieval_score", "boost_score",
+];
+
+test("agent sources are shaped with every key a document entry has, plus kind and url", () => {
+  const [web, document] = toResponseSources(AGENT_SOURCES);
+
+  DOCUMENT_KEYS.forEach((key) => {
+    assert.ok(key in web, `web source carries ${key}`);
+    assert.ok(key in document, `document source carries ${key}`);
+  });
+
+  assert.equal(web.kind, "web");
+  assert.equal(web.url, "https://example.com/langgraph");
+  assert.equal(web.id, web.url, "a web result's identity is its url");
+  assert.deepEqual(web.metadata.external_links, { source: "https://example.com/langgraph" });
+  assert.equal(web.content_full, "Released...");
+
+  assert.equal(document.kind, "document");
+  assert.equal(document.id, "doc-1");
+  assert.equal(document.url, null);
+});
+
+test("repeated agent sources are dropped, first one wins", () => {
+  const shaped = toResponseSources(AGENT_SOURCES);
+
+  assert.deepEqual(shaped.map((s) => s.id), ["https://example.com/langgraph", "doc-1"]);
+  assert.equal(shaped[0].title, "LangGraph v1");
+  assert.deepEqual(toResponseSources(undefined), []);
+  assert.deepEqual(toResponseSources([{ title: "no url" }]), [], "a source with no identity is dropped");
+});
+
+test("POST /chat returns the agent's sources alongside the answer", async () => {
+  const restore = stub(agent, {
+    runTurn: async ({ sessionId }) => ({
+      sessionId,
+      runId: RUN_ID,
+      route: "agent",
+      answer: "LangGraph shipped v1.",
+      documents: [],
+      searchResults: AGENT_SOURCES,
+    }),
+  });
+
+  try {
+    await withServer(async (base) => {
+      const response = await call(base, `${P}/chat`, { method: "POST", body: { message: "what's new in LangGraph?" } });
+      const { data } = await response.json();
+
+      assert.equal(response.status, 200);
+      assert.equal(data.answer, "LangGraph shipped v1.");
+      assert.deepEqual(data.documents, []);
+      assert.deepEqual(data.sources, toResponseSources(AGENT_SOURCES));
+    });
+  } finally {
+    restore();
+  }
+});
+
+test("POST /chat returns empty sources for a route that does not run the agent", async () => {
+  const restore = stub(agent, {
+    runTurn: async ({ sessionId }) => ({
+      sessionId, runId: RUN_ID, route: "knowledge", answer: "a", documents: [], searchResults: [],
+    }),
+  });
+
+  try {
+    await withServer(async (base) => {
+      const { data } = await (await call(base, `${P}/chat`, { method: "POST", body: { message: "q" } })).json();
+      assert.deepEqual(data.sources, []);
+    });
+  } finally {
+    restore();
+  }
+});
+
+test("the feed returns the agent's sources in the same shape /chat does", async () => {
+  const restore = stub(runs, {
+    getRun: async () => finishedRun({ route: "agent", documents: [], sources: AGENT_SOURCES }),
+    listSteps: async () => [],
+  });
+
+  try {
+    await withServer(async (base) => {
+      const { data } = await (await call(base, `${P}/runs/${RUN_ID}`)).json();
+      assert.deepEqual(data.sources, toResponseSources(AGENT_SOURCES));
+    });
+  } finally {
+    restore();
+  }
+});
+
+test("a run stored before sources existed reports an empty list, not an error", async () => {
+  const restore = stub(runs, {
+    getRun: async () => finishedRun(), // no `sources` key, as rows written before 2026-09-23
+    listSteps: async () => [],
+  });
+
+  try {
+    await withServer(async (base) => {
+      const { data } = await (await call(base, `${P}/runs/${RUN_ID}`)).json();
+      assert.deepEqual(data.sources, []);
+    });
+  } finally {
+    restore();
+  }
+});

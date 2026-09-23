@@ -167,10 +167,15 @@ Two notes on which routes populate it:
   documents; a mixed one ("my github stats *and* my projects") returns both the numbers and
   a full `documents` array. Do not key your source panel on the route name — key it on
   `documents.length`.
-- **`agent` never does, and cites inline instead.** The agent researches with tools rather
-  than writing to `documents`, so its citations live in the answer markdown as links and
-  document titles. Its tool sources are not currently exposed as a structured field; if you
-  want a source panel for agent answers, say so and the backend will add one.
+- **`agent` never does — its citations are in `sources` instead.** The agent researches
+  with tools rather than writing to `documents`. Since 2026-09-23 both `/chat` and the run
+  feed carry a `sources` array: web results and the portfolio documents the agent looked
+  up, **each entry with the same keys as a `documents` entry** so your existing renderer
+  works on it, plus `kind` (`"web"` | `"document"`) and `url`. A web result's link is also
+  at `metadata.external_links.source`, where document links already live. A document
+  entry carries only `id` and `title` — the rest are empty. `sources` is `[]` for every
+  route that does not run the agent. To show one panel for both: render
+  `[...documents, ...sources]`.
 
 ---
 
@@ -448,8 +453,8 @@ BASE = https://api.portfolio.moonman.in/api/v1/moonmind
 HEADERS = { "Content-Type": "application/json", "password": <MOONMIND_PASSWORD> }
 
 POST {BASE}/runs                      -> 202 { data: { runId, sessionId } }
-GET  {BASE}/runs/{runId}?since={seq}  -> 200 { data: { status, answer, documents, steps, nextSince, ... } }
-POST {BASE}/chat                      -> 200 { data: { answer, documents, sessionId, runId, route } }
+GET  {BASE}/runs/{runId}?since={seq}  -> 200 { data: { status, answer, documents, sources, steps, nextSince, ... } }
+POST {BASE}/chat                      -> 200 { data: { answer, documents, sources, sessionId, runId, route } }
 ```
 
 Interactive docs: **`/api/docs`**. Machine-readable spec: **`/api/openapi.json`** — point

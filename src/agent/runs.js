@@ -199,6 +199,8 @@ async function startRun({ runId, sessionId, question }, deps = {}) {
     documents: [],
     documentIds: [],
     documentCount: 0,
+    // The agent's sources, stored raw for the same reason and shaped on the way out.
+    sources: [],
     error: null,
     startedAt: new Date(),
     finishedAt: null,
@@ -242,6 +244,7 @@ async function finishRun({ runId, turn }, deps = {}) {
         documents,
         documentIds: documents.map((document) => document?.id ?? null).filter(Boolean),
         documentCount: documents.length,
+        sources: Array.isArray(turn?.searchResults) ? turn.searchResults : [],
         error: turn?.error ? { node: turn.error.node ?? null, message: summarizeError(turn.error) } : null,
         finishedAt: new Date(),
       },

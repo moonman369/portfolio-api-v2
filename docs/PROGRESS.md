@@ -1107,7 +1107,8 @@ before the call that writes the answer, and 4 truncated those.
 1. **Phase 9 must close the routing gap.** Until the `knowledge` → `agent` escalation
    exists, the document tools are only reachable by calling the node directly.
    `docs/evals/agent.md` §2 is the baseline for what the escalation should produce.
-2. **`searchResults` is in `toTurn` but not in the HTTP response.** `/chat` returns
+2. ***Closed 2026-09-23 (`phase-8: surface agent sources`)** — `/chat` and the run feed
+   now carry a `sources` array; see the Phase 9 handoff.* **`searchResults` is in `toTurn` but not in the HTTP response.** `/chat` returns
    `documents` but not the agent's sources, so a frontend rendering an agent answer has
    its citations only as markdown inside the prose. Adding it is a response-shape change
    and belongs with Phase 11's cutover, next to `docs/FRONTEND_INTEGRATION.md`.

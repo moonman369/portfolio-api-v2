@@ -54,6 +54,52 @@ function toResponseDocuments(documents) {
   });
 }
 
+/**
+ * Shape the agent's sources for the response — web results and document references.
+ *
+ * Entry for entry in the `documents` shape, so a source panel that renders `documents`
+ * renders these with the same code. A web result's link sits in
+ * `metadata.external_links`, where a document's links already live. `kind` and `url` are
+ * the two keys a document entry does not have. The agent can hit the same source twice
+ * (two searches, overlapping results), so repeats are dropped, first one wins.
+ */
+function toResponseSources(sources) {
+  if (!Array.isArray(sources)) {
+    return [];
+  }
+
+  const seen = new Set();
+  const shaped = [];
+
+  sources.forEach((source) => {
+    const web = source?.kind !== "document";
+    const key = web ? source?.url : source?.id;
+    if (!key || seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+
+    shaped.push({
+      id: key,
+      title: source?.title || key,
+      category: web ? "web" : null,
+      tags: [],
+      content_full: web ? source?.content || null : null,
+      metadata: web ? { external_links: { source: source.url } } : {},
+      score: web ? (source?.score ?? null) : null,
+      semantic_score: null,
+      retrieval_sources: [],
+      rrf_score: null,
+      retrieval_score: null,
+      boost_score: null,
+      kind: web ? "web" : "document",
+      url: web ? source.url : null,
+    });
+  });
+
+  return shaped;
+}
+
 // `since` is the last seq the caller already holds; absent means "from the start".
 const feedQuerySchema = z.object({
   since: z.coerce.number().int().min(0).default(0),
@@ -76,6 +122,7 @@ function toFeedResponse(run, steps, since) {
     documents: toResponseDocuments(run.documents),
     documentIds: run.documentIds ?? [],
     documentCount: run.documentCount ?? 0,
+    sources: toResponseSources(run.sources),
     startedAt: run.startedAt,
     finishedAt: run.finishedAt,
     steps: steps.map(({ seq, node, type, ts, summary }) => ({ seq, node, type, ts, summary })),
@@ -115,6 +162,8 @@ function createChatRouter() {
         route: turn.route,
         answer: turn.answer,
         documents: toResponseDocuments(turn.documents),
+        // The agent's citations. Empty for every route that does not run the agent.
+        sources: toResponseSources(turn.searchResults),
         // Extra field, gated on MOONMIND_RETRIEVAL_DEBUG, never part of the normal
         // response shape. Ids and titles only — see retrieval/index.js.
         ...(retrieval.debugEnabled ? { retrievalDebug: turn.retrievalDebug } : {}),
@@ -181,4 +230,10 @@ function createChatRouter() {
   return router;
 }
 
-module.exports = { createChatRouter, buildBodySchema, toResponseDocuments, toFeedResponse };
+module.exports = {
+  createChatRouter,
+  buildBodySchema,
+  toResponseDocuments,
+  toResponseSources,
+  toFeedResponse,
+};

@@ -119,6 +119,13 @@ function buildComponents(maxMessageChars) {
       DocumentPayload: fromZod(documentSchema),
       ChatRequest: fromZod(buildBodySchema(maxMessageChars)),
 
+      AgentSources: {
+        type: "array",
+        description:
+          "The agent's citations — web results and portfolio documents it looked up. Each entry has the same keys as a `documents` entry, so the same renderer works, plus `kind` (`web` | `document`) and `url`. A web result's link is also in `metadata.external_links.source`. Repeats are dropped. Empty for routes that do not run the agent, and until a run finishes.",
+        items: { type: "object", additionalProperties: true },
+      },
+
       ChatResponse: object({
         status: str("success"),
         data: object({
@@ -136,6 +143,7 @@ function buildComponents(maxMessageChars) {
               "Documents that grounded the answer. Empty for routes that do not retrieve. `summary_for_embedding` is stripped — it is keyword soup for the embedder, not prose.",
             items: { type: "object", additionalProperties: true },
           },
+          sources: ref("AgentSources"),
         }),
       }),
 
@@ -182,6 +190,7 @@ function buildComponents(maxMessageChars) {
           },
           documentIds: { type: "array", items: str(), description: "Their ids, for convenience." },
           documentCount: int(8),
+          sources: ref("AgentSources"),
           startedAt: str(),
           finishedAt: { type: "string", nullable: true },
           steps: { type: "array", items: ref("RunStep") },
