@@ -200,7 +200,15 @@ There are four and there will only ever be four; the backend validates against t
 ### 4.2 `node` — the graph nodes
 
 Every run begins with `router` and ends with `generate`. Exactly one branch runs between
-them. Each of these emits `start`, then `end` **or** `error`.
+them — with one exception, below. Each of these emits `start`, then `end` **or** `error`.
+
+**The escalation (since 2026-09-23).** A `knowledge` question that retrieval cannot fully
+answer — one that asks about the market, "latest", "today", or that the portfolio barely
+matches — hops once to `agent`. The run then reads
+`router → knowledge → escalation → agent → generate`, `route` stays `"knowledge"`, and the
+answer comes with both `documents` (what `knowledge` found) and `sources` (what the agent
+found). It happens at most once per question. Label `escalation` something like
+"Looking further" and let the `agent` step that follows keep its usual label.
 
 | `node` | When it runs | Suggested label |
 |---|---|---|
@@ -212,6 +220,7 @@ them. Each of these emits `start`, then `end` **or** `error`.
 | `refusal` | Off-topic or unsafe requests | Preparing a response |
 | `capabilities` | "What can you do?" | Preparing a response |
 | `greeting` | A bare "hey" with no question | Saying hello |
+| `escalation` | Between `knowledge` and `agent`, when a portfolio question needs more (see above) | Looking further |
 | `generate` | Always, last | Writing the answer |
 
 There is one more you are very unlikely to see: **`tech_web`**, a retired label kept alive
@@ -265,12 +274,13 @@ the `node` maps above, not from parsing this.**
 | | | `documents=15` · `answer=1212 chars` |
 | | | `documents=15 stats=requested+github` |
 | | | `candidates=5 answer=1990 chars` |
+| | | `documents=15 escalate=needs_current` (on `knowledge`) · `escalations=1` (on `escalation`) |
 | `tool` | `<tool> -> <result shape>` | `web_search -> 5 results` · `resolve_time -> 0 results` |
 | `error` | the error message | `retrieval exploded` · `web_search -> no result` |
 
 The keys that can appear in an `end` summary, in this order: `route`, `confidence`,
 `slots` (**key names only, never values**), `candidates`, `documents`, `stats`,
-`answer=N chars`.
+`answer=N chars`, `escalate` (`weak_retrieval` | `needs_current`), `escalations`.
 
 **Three `end` steps legitimately have an empty `summary`** — these are not bugs, do not
 render them as failures:

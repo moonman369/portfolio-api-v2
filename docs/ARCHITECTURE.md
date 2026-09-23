@@ -132,7 +132,7 @@ function buildGraph({ nodes, checkpointer }) {
     /* one addNode per route + 'generate' */
     .addEdge(START, 'router')
     .addConditionalEdges('router', routeFromState, ROUTE_TO_NODE)
-    /* each branch -> 'generate' */
+    /* each branch -> 'generate', except knowledge -> escalation? -> agent (once) */
     .addEdge('generate', END)
     .compile({ checkpointer });
 }
@@ -171,8 +171,8 @@ guard (non-LLM: length cap, rate limit, auth)  [existing http-layer checks, unch
 ```
 
 - `about_me` and `complex` merge into **`knowledge`** — the boundary between them was
-  never real. Trend and comparison questions about Ayan are answered from retrieval alone
-  until Phase 9 adds the escalation.
+  never real. Trend and comparison questions about Ayan are answered from retrieval;
+  the ones that need the market or "today" escalate to `agent` (Phase 9, below).
 - `tech_web` and `complex`'s tool use merge into **`agent`**: one `makeAgentNode` call,
   four tools (`resolve_time`, `metadata_filter`, `semantic_search`, `web_search`). Built
   in Phase 8. `resolve_time` is deterministic; the two document tools are thin wrappers
@@ -186,8 +186,18 @@ guard (non-LLM: length cap, rate limit, auth)  [existing http-layer checks, unch
   numbers question skips retrieval; a mixed one composes both halves. The label is
   narrower than what the node does, which was the accepted cost of not keeping an eighth
   label.
-- Escalation: `knowledge` may hand off to `agent` **once per turn**, budget enforced in
-  state. No other node escalates; `agent` never escalates back.
+- Escalation (Phase 9): `knowledge` may hand off to `agent` **once per turn**.
+  `knowledge` only *asks* (`escalate`, with `escalationReason`), deterministically and with
+  no model call: when the pool's best semantic score is below
+  `MOONMIND_ESCALATION_MIN_TOP_SCORE` (`weak_retrieval`), or when the question asks for
+  current/market framing (`needs_current`, a phrase list plus `MOONMIND_ESCALATION_TERMS`).
+  The graph decides: `routeAfterKnowledge` allows the hop only while `escalations < 1`,
+  and an `escalation` node — owned by `graph.js`, not injectable — spends the budget and
+  appears in the run feed. The agent is handed `knowledge`'s documents (sanitized, in its
+  system prompt) and the same history every turn gets. No other node escalates; `agent`
+  never escalates back — its only edge is to `generate`. `stats` composes the knowledge
+  node but keeps only its documents, so a mixed question never escalates (accepted,
+  PROGRESS.md Decisions 2026-09-23).
 - **`greeting`** is templated alongside `refusal` and `capabilities` (added Phase 6.5).
   "Hey" is a greeting, not a request for the feature list — answering it with the
   capability menu was a live bug. `capabilities` stays for the explicit ask.
@@ -207,7 +217,9 @@ State fields (supersedes LLD §3): `sessionId`, `rawQuery`, `messages`, `route`,
 `routeConfidence`, `slots`, `documents`, `statsPayload`, `searchResults`, `summary`,
 **`finalAnswer`**, **`error`**, **`activeFlow`**, **`previousRoute`** (the route the last
 turn took — written by `generate`, outside the per-turn reset, so a refinement can inherit
-it), **`agentEscalationUsed`** (the `knowledge`→`agent` handoff budget, reset per turn).
+it), **`escalate`** / **`escalationReason`** / **`escalations`** (the `knowledge`→`agent`
+request, its reason, and the hop budget — all reset per turn; Phase 9 named the budget
+`escalations`, a count, where this doc had planned a boolean `agentEscalationUsed`).
 `pendingConfirmation` is dropped — `action`'s `book` branch returns a templated link with
 no confirmation step, and `mail` is deterministic.
 
@@ -227,7 +239,8 @@ temperature 0, and each has a defined failure path:
 | intent | deterministic taxonomy fallback (the old repo's unprotected call is a bug — see `OLD_REPO_MAP.md` §10.36) |
 
 **Per-turn reset.** `runTurn` resets the per-turn fields in its invoke input —
-`route`, `documents`, `statsPayload`, `searchResults`, `finalAnswer`, `error`. Without
+`route`, `documents`, `statsPayload`, `searchResults`, `escalate`, `escalationReason`,
+`escalations`, `finalAnswer`, `error`. Without
 this the checkpointer leaks the previous turn's documents and answer into this one.
 Persistent across turns: `messages`, `slots`, `pendingConfirmation`, `activeFlow`,
 `summary`.

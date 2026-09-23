@@ -193,6 +193,34 @@ function buildDocumentContext(documents) {
   ].join("\n");
 }
 
+/**
+ * What the agent is handed when `knowledge` escalates to it (Phase 9): the documents
+ * retrieval already found, so the agent starts from them instead of searching the
+ * portfolio again, and a line saying why it was called. Null when there is nothing to
+ * hand over — a question the agent was routed to directly has no documents this turn.
+ * Takes documents already through `sanitizeForPrompt`, like `buildDocumentContext`.
+ */
+function buildEscalationContext(documents, reason) {
+  if (!Array.isArray(documents) || documents.length === 0) {
+    return null;
+  }
+
+  const why =
+    reason === "weak_retrieval"
+      ? "Portfolio retrieval matched only weakly, so these may not answer the question."
+      : "The question needs something the portfolio cannot hold — current, market or industry framing.";
+
+  return [
+    `HANDOVER - Ayan's portfolio was already searched for this question. ${why}`,
+    "The documents below ARE that search's result. This overrides the tool guidance above:",
+    "do NOT call semantic_search or metadata_filter to find them again. Call a document",
+    "tool only for a specific period or topic about Ayan that none of these documents",
+    "covers. Spend your tool calls on web_search, for the current or market part.",
+    `${documents.length} document(s):`,
+    JSON.stringify(documents),
+  ].join("\n");
+}
+
 /** Told explicitly, so the model follows the "answer anyway" rule instead of guessing. */
 const NO_DOCUMENTS_CONTEXT =
   "CONTEXT - no supporting documents matched this question. Answer as helpfully as you can from the conversation alone, and note briefly that you have no matching documents for it right now.";
@@ -503,6 +531,7 @@ function buildCapabilitiesAnswer() {
 
 module.exports = {
   ROUTER_SYSTEM_PROMPT,
+  buildEscalationContext,
   buildRouterContext,
   GENERATE_SYSTEM_PROMPT,
   buildStatsContext,

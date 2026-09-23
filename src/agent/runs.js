@@ -74,6 +74,10 @@ const UPDATE_SUMMARIZERS = Object.freeze([
       .join(" ");
   }],
   ["finalAnswer", (value) => `answer=${String(value).length} chars`],
+  // The escalation: why knowledge asked for it (an enum we wrote, never visitor text),
+  // and the hop's own step spending the budget.
+  ["escalationReason", (value) => `escalate=${value}`],
+  ["escalations", (value) => `escalations=${value}`],
 ]);
 
 /** Summarize the state update a node returned. Derived facts only. */

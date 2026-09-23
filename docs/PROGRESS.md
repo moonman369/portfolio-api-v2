@@ -224,7 +224,10 @@ escalation hop, 10 = action node, 11 = cutover + final structure audit.** Nothin
 completed was renumbered; handoff entries before this date that say "Phase 9's action" or
 "Phase 9's mail flow" mean Phase 10.*
 
-### `[ ]` Phase 9 — Escalation hop (`knowledge` → `agent`, once per turn)
+### `[x]` Phase 9 — Escalation hop (`knowledge` → `agent`, once per turn)
+*Done 2026-09-23. Gate settled with **two numbers**, not one — a 0.82 cut-off and a 0.84
+escalation trigger (Ayan's call; see Decisions). Evidence in `docs/evals/retrieval-floor.md`
+and `docs/evals/escalation.md`.*
 **Before the hop, in order:** (1) this numbering fix and two standing decisions (see
 Decisions, 2026-09-23); (2) close Phase 8's unmet exit condition — the agent's sources in
 the `/chat` response, committed separately as `phase-8: surface agent sources`; (3) set
@@ -1178,6 +1181,111 @@ committed as a script — it would just become more examples to tune against.
 
 ---
 
+### Phase 9 — Escalation hop — 2026-09-23
+
+**Shipped, in three commits.** `phase-9: correct progress numbering` (9 = escalation,
+10 = action, 11 = cutover + final audit; two standing decisions); `phase-8: surface agent
+sources` (Phase 8's unmet exit condition); and this one. 408 offline tests pass (29 new
+across the phase: 7 for sources, 22 for the hop and the floor). Live: `docs/evals/escalation.md` PASS.
+
+**Step 2 — agent sources.** `/chat` and the run feed carry a `sources` array: web results
+and document references, each entry with the same keys as a `documents` entry plus `kind`
+and `url`, repeats dropped. The run store keeps them next to `documents`. The agent, its
+prompt and its tools were not touched. `FRONTEND_INTEGRATION.md` §3 and the OpenAPI
+schema document it.
+
+**Step 3 — the floor, and why the A/B file could not set it.** `docs/evals/retrieval-ab.md`
+recorded ids, never scores. `scripts/retrieval-floor.js` (new, read-only) measured the
+semantic arm over 18 queries — the Phase 3b set, the Phase 7 baseline, the three Phase 8
+questions, two narrow and two nothing-should-match probes — and simulated both absolute
+and relative floors. Scores sit in a 0.76-0.90 band. Findings, all in
+`docs/evals/retrieval-floor.md`: the nothing-probes top out at 0.8276 and every real
+question starts at 0.8502, so a trigger at 0.84 separates them; the same 0.84 as a
+cut-off costs broad recall; relative floors fail because the "About Ayan" document tops 7
+of 18 queries; "underwater basket weaving" (0.8539) is inseparable by score. Ayan chose B:
+cut-off 0.82, trigger 0.84 (Decisions).
+
+**Step 4 — the hop.**
+- `knowledge` asks, deterministically and with no model call: `weak_retrieval` when
+  `retrieve()`'s new `topSemanticScore` (best of the whole pool, pre-gate) is under 0.84;
+  `needs_current` when the question matches a word-bounded phrase list (`market`, `the
+  industry`, `latest`, `today`, `nowadays`, `trends`, `state of the art`, …) plus
+  `MOONMIND_ESCALATION_TERMS`.
+- The graph decides: `routeAfterKnowledge` → `escalation` only while `escalations < 1`;
+  the `escalation` node spends the budget and edges to `agent`; `agent` edges only to
+  `generate`. `knowledge` is the only node with the edge.
+- The agent gets `knowledge`'s documents (sanitized, as a HANDOVER block in its system
+  prompt) and the same capped history every turn gets. A direct `agent` turn has no
+  documents, so no handover.
+- The feed shows it: `knowledge end … escalate=needs_current`, then `escalation`
+  start/end with `escalations=1`, then `agent`.
+
+**A defect the floor exposed, fixed.** With the gate above 0, `metadata_filter` returned
+nothing: its hits come from a Mongo filter and carry no semantic score, so the gate dropped
+every one. `runArm` now skips the floor when the semantic arm did not run. The existing
+tool test caught it — it runs on production defaults.
+
+**Verified.**
+- Offline (`test/agent/escalation.test.js`): a knowledge node that **always** asks still
+  terminates with `escalations === 1`, under a recursion limit of 6 (the escalated path is
+  5 supersteps); an agent that also asks goes nowhere; the edge refuses a second hop; a
+  throwing `knowledge` never hops; the budget resets per turn; **`stats` + `withDocuments`
+  does not escalate even when its composed retrieval asks — stated in the test as the
+  accepted limitation**; the 11 Phase 3b/Phase 7 questions at their measured scores never
+  escalate; the handover carries documents (sanitized) and history; the feed shows the step.
+- Live (`docs/evals/escalation.md`): "AI projects + market relevance today" → `knowledge`,
+  escalated (`needs_current`), 15 documents handed over, 5 web sources, a market section
+  citing two 2026 trend reports; every cited URL came from a tool or a handed-over
+  document. Before: the same projects list, with market relevance asserted from nothing.
+  The Phase 3b set and the Phase 7 baseline: **none escalated**, all on their usual route,
+  7-16 s — no extra model call on the ordinary path.
+
+**Files.** `src/agent/graph.js` (edge, hop node, budget), `state.js` (three per-turn
+fields), `nodes/knowledge.js` (trigger), `nodes/agents.js` (handover), `prompts.js`
+(`buildEscalationContext`), `runs.js` (feed summaries), `index.js` (`toTurn`), `tools.js`
+(ungated metadata arm), `src/retrieval/index.js` (`topSemanticScore`), `src/config.js`,
+`.env.example`, `docs/ARCHITECTURE.md` §4-5, `docs/FRONTEND_INTEGRATION.md` §4. New:
+`scripts/retrieval-floor.js`, `scripts/escalation-eval.js`,
+`docs/evals/retrieval-floor.md`, `docs/evals/escalation.md`,
+`test/agent/escalation.test.js`. Stale "Phase 9 = action" comments renumbered.
+
+**Env vars.** Two added, two defaults changed; total 85.
+`MOONMIND_ESCALATION_MIN_TOP_SCORE` (0.84; 0 turns the weak trigger off) and
+`MOONMIND_ESCALATION_TERMS` (appends to the phrase list — the second var is what makes the
+wording trigger config-driven, as the brief required). `MOONMIND_MIN_SEMANTIC_SCORE` 0 →
+0.82; `MOONMIND_FINAL_DOCUMENT_LIMIT` default 10 → 15 (the deployed `.env` already had 15).
+
+**Deviations.** Two, recorded below (49-50).
+
+**Open items.**
+1. **The agent still spends one document-tool call after a handover** (10 document-tool
+   sources in the live run), even after the handover was worded as an explicit override.
+   Documents and history are passed; gpt-4o-mini re-checks anyway. Enforcing it would
+   mean a per-turn toolset, which the one-`TOOLSETS`-map rule forbids. The lever is
+   `MOONMIND_AGENT_MODEL` (Phase 8 open item 3).
+2. **Weak-retrieval escalation bought nothing on the live nothing-probe.** "Has Ayan
+   published a cookbook?" escalated, handed over 0 documents (all under 0.82), the agent
+   found nothing, and answered as `knowledge` alone did — 4-5 s slower. The trigger works;
+   whether it earns its latency is Ayan's call. `MOONMIND_ESCALATION_MIN_TOP_SCORE=0` turns
+   it off without touching `needs_current`.
+3. **Known misses.** "Underwater basket weaving" does not trigger (0.854, name match).
+   "His latest project" does (`latest`) — slower, same answer.
+4. **The 0.82 gate changes what ordinary answers see:** TCS 15 → 10 documents,
+   certifications 9, education 5, hobbies 1, and metadata-only hits (0-5 per query) are
+   dropped. That is what was chosen, but answer quality was not re-judged here — run
+   `knowledge-eval` (carried since Phase 3b) against it.
+5. **An agent failure after a hop answers with the generic error copy**, not with the
+   documents `knowledge` already found. Falling back to `generate` with them would be a
+   small change to the error path; not done in a phase that already changes topology.
+6. **File sizes:** `graph.js` 322 and `agents.js` 259 lines are now over the ~250
+   guideline, joining `prompts.js` 557, `tools.js` 483, `index.js` 374, `runs.js` 305.
+   For the Phase 11 audit.
+7. **Carried over:** Phase 0's deploy and parity run (**due before Phase 11**), Phase 2's
+   `stats-eval`, Phase 3a's `retrieval-parity`, Phase 3b's `knowledge-eval`, Phase 4's two
+   live re-checks; Phase 8's `MOONMIND_AGENT_MODEL` question.
+
+---
+
 ## Decisions
 
 *(One line per decision: what was decided, by whom, and why. Append as they are made.)*
@@ -1264,7 +1372,20 @@ committed as a script — it would just become more examples to tune against.
 - **2026-09-23 — Phase 0's deploy and live parity run are due before Phase 11, not at
   it** (Ayan). Phase 0 was ticked without them (2026-09-12) and every phase since has
   been built on an unverified base. Recorded as an open item on Phase 11's checklist.
-- **2026-09-23 — Phase numbering restored** (Ayan): 9 = escalation hop, 10 = action
+- **2026-09-23 — Retrieval floor: two numbers, `MOONMIND_MIN_SEMANTIC_SCORE=0.82` and
+  `MOONMIND_ESCALATION_MIN_TOP_SCORE=0.84`** (Ayan, at the Phase 9 gate, from
+  `docs/evals/retrieval-floor.md`). The Phase 6 A/B recorded ids but no scores, so it could
+  not set a floor; the new measurement over 18 queries could. As a trigger 0.84 splits
+  cleanly — the nothing-should-match probes top out at 0.828, every real question starts
+  at 0.850. As a cut-off it would have cost broad recall (backend tech 7 of 11 relevant,
+  strongest-skills-and-projects 3), undoing the k=15 decision. So the cut-off is 0.82,
+  which trims every query's tail while keeping broad recall, and the escalation reads the
+  pool's top score against 0.84. **Accepted cost:** a narrow question ("Ayan's resume")
+  still returns 15 documents — only a floor of 0.84+ makes it a handful. Relative floors
+  (within X of the top score) were rejected by the same data: the "About Ayan" document is
+  the top hit for 7 of 18 queries and inflates the top score for anything naming him.
+  `config.js`'s k default also moved 10 → 15 to match the Phase 6 decision.
+: 9 = escalation hop, 10 = action
   node, 11 = cutover + final structure audit. See the note above Phase 9's checklist.
 
 ---
@@ -2099,3 +2220,21 @@ clean `npm ci`. One line to delete; left alone because it is outside what was as
     and a UUID in a visitor-facing answer is exactly that. Titles are what a visitor can
     recognise and follow up on; the ids stay in the tool artifact, so the node and the run
     feed still have them. Same information, different audience.
+
+## Phase 9 deviations from LLD
+
+49. **Two floors, not one.** The LLD's escalation fires on weak retrieval against "the"
+    retrieval threshold, and the Phase 9 brief said the same. Measured, one number cannot do
+    both jobs: the value that separates "retrieval had nothing" (0.84) cuts broad-question
+    recall when used as the document cut-off. So `MOONMIND_MIN_SEMANTIC_SCORE` (0.82) gates
+    documents and `MOONMIND_ESCALATION_MIN_TOP_SCORE` (0.84) triggers the hop, read against
+    the pool's best score before the gate. Ayan's call at the gate.
+50. **The budget is a count spent by a graph-owned node.** ARCHITECTURE.md had planned a
+    boolean `agentEscalationUsed`; the brief asked for `escalations: 0`. `knowledge` only
+    sets `escalate` + `escalationReason`; `routeAfterKnowledge` allows the hop while
+    `escalations < 1`, and an `escalation` node in `graph.js` — not injectable, so no fake
+    or buggy node can bypass it — increments it. It is a node rather than edge logic because
+    edges cannot write state, and it is named `escalation`, not `escalate`, because LangGraph
+    forbids a node sharing a name with a state channel. The handover reaches the agent in
+    its **system prompt** via `runtime.context`, not as a message, so the conversation it
+    sees is exactly the visitor's.

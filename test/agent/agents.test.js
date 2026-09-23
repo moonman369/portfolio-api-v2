@@ -106,13 +106,13 @@ test("the agent's bound tools are exactly those four", () => {
 });
 
 test("the collapsed taxonomy left exactly one toolset", () => {
-  // Phase 8 deleted TOOLSETS.tech_web. Phase 9's `action` deliberately never gets an
+  // Phase 8 deleted TOOLSETS.tech_web. Phase 10's `action` deliberately never gets an
   // entry — its side effect runs in node code, not behind a model's decision.
   assert.deepEqual(Object.keys(TOOLSETS), ["agent"]);
 });
 
 test("no toolset in the map carries a calendar or email tool", () => {
-  // No exemptions any more: Phase 9's `action` is not an agent and gets no toolset, so
+  // No exemptions any more: Phase 10's `action` is not an agent and gets no toolset, so
   // nothing in this map should ever be able to act. This fails the moment that changes.
   const forbidden = /calendar|email|mail|event|book|send|create|schedule|write|delete/i;
 

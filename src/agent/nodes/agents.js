@@ -23,10 +23,12 @@ const { RunnableLambda } = require("@langchain/core/runnables");
 const { getConfig } = require("../../config");
 const { getModel } = require("../models");
 const { recentMessages } = require("../state");
+const { sanitizeForPrompt } = require("../../retrieval/rank");
 const {
   AGENT_NO_ANSWER,
   buildTruncatedAnswer,
   buildDateContext,
+  buildEscalationContext,
   buildScopePrompt,
   resolveExcludedTopics,
   OUT_OF_SCOPE_ANSWER,
@@ -50,7 +52,7 @@ const ScopeOutputSchema = z.object({
  * the failure is logged. A scope guard is an editorial filter, not a safety control:
  * the model's own training still applies, and the router's `refusal` route still exists,
  * so breaking every tech question because a classifier hiccuped is the worse outcome.
- * Note that this reasoning does NOT transfer to Phase 9's `action` node, which guards a
+ * Note that this reasoning does NOT transfer to Phase 10's `action` node, which guards a
  * side effect — sending mail — and must fail closed.
  */
 function createScopeGuard({ name, topics, model }) {
@@ -179,10 +181,16 @@ function makeAgentNode({ name, toolset, prompt, maxSteps, sourcesField, scopeGua
       // always-on, so a date resolved once at boot would go stale within a day.
       //
       // This is the same defect Deviation 32 recorded for the old response prompt, in a
-      // new place. Every agent gets it, not just tech_web - Phase 9 cannot resolve
+      // new place. Every agent gets it, not just tech_web - Phase 10 cannot resolve
       // "next Tuesday" without knowing what today is.
       middleware: [
-        dynamicSystemPromptMiddleware(() => `${prompt}\n\n${buildDateContext()}`),
+        //
+        // `runtime.context.handover` is the escalation's documents (Phase 9), passed per
+        // invocation rather than as a message so the conversation the agent sees is
+        // exactly the conversation the visitor had.
+        dynamicSystemPromptMiddleware((_state, runtime) =>
+          [prompt, buildDateContext(), runtime?.context?.handover].filter(Boolean).join("\n\n"),
+        ),
         modelCallLimitMiddleware({ runLimit: steps, exitBehavior: "end" }),
       ],
     });
@@ -216,7 +224,17 @@ function makeAgentNode({ name, toolset, prompt, maxSteps, sourcesField, scopeGua
 
     // `runConfig` is passed straight through: it carries the run's abort signal and the
     // callback manager, which is how the agent's tool calls surface in the Phase 4 feed.
-    const result = await agent.invoke({ messages: seed }, runConfig);
+    //
+    // On an escalation from `knowledge`, the documents it already retrieved go with the
+    // question so that work is not redone. The history goes too — `seed` above is the
+    // same capped tail every turn gets — so "and how does that compare to the market?"
+    // still has the turn before it. A direct `agent` turn has no documents (per-turn
+    // reset), so there is no handover and the agent behaves exactly as before Phase 9.
+    const handover = buildEscalationContext(sanitizeForPrompt(state.documents), state.escalationReason);
+    const result = await agent.invoke(
+      { messages: seed },
+      handover ? { ...runConfig, context: { ...(runConfig?.context ?? {}), handover } } : runConfig,
+    );
     const messages = result?.messages ?? [];
 
     const sources = collectSources(messages);

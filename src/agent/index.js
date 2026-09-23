@@ -22,7 +22,7 @@ const { TOOLSETS } = require("./tools");
 const { AGENT_SYSTEM_PROMPT } = require("./prompts");
 const { refusal, listCapabilities, greeting, makeStubNode } = require("./nodes/simple");
 
-// Routes whose real implementation lands in a later phase: `action` in Phase 9
+// Routes whose real implementation lands in a later phase: `action` in Phase 10
 // (book | mail).
 const STUBBED_ROUTES = Object.freeze(["action"]);
 
@@ -128,6 +128,10 @@ function toTurn({ sessionId, runId, state }) {
     // found every caller reporting zero.
     searchResults: result.searchResults ?? [],
     statsPayload: result.statsPayload ?? null,
+    // Whether this turn hopped knowledge -> agent (Phase 9), and why. For evals, logs and
+    // the run feed's final step; not part of the HTTP response.
+    escalations: result.escalations ?? 0,
+    escalationReason: result.escalationReason ?? null,
     retrievalDebug: result.retrievalDebug ?? null,
     error: result.error ?? null,
   };
@@ -139,7 +143,7 @@ function toTurn({ sessionId, runId, state }) {
  * @param {{ sessionId: string, message: string }} turn
  * @param {{ graph?: object }} [deps] Injected compiled graph, for tests and evals.
  * @returns {Promise<{sessionId, runId, route, routeConfidence, answer, documents,
- *   searchResults, statsPayload, retrievalDebug, error}>}
+ *   searchResults, statsPayload, escalations, escalationReason, retrievalDebug, error}>}
  */
 async function runTurn({ sessionId, message }, deps = {}) {
   const graph = deps.graph ?? (await getCompiledGraph());

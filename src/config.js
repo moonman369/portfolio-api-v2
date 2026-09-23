@@ -165,6 +165,14 @@ const envSchema = z.object({
   MOONMIND_SCOPE_GUARD_ENABLED: booleanFlag(true),
   MOONMIND_EXCLUDED_TOPICS: optionalList,
   MOONMIND_RECURSION_LIMIT: positiveInt.default(25),
+  // The knowledge -> agent escalation (Phase 9). Retrieval counts as weak when its best
+  // semantic score is below this — deliberately a second number, not the gate above: at
+  // 0.84 the two nothing-should-match probes (<= 0.828) separate from every real question
+  // (>= 0.850), where as a cut-off it would cost broad recall. 0 turns this trigger off.
+  MOONMIND_ESCALATION_MIN_TOP_SCORE: z.coerce.number().min(0).max(1).default(0.84),
+  // Phrases that mean a question needs something retrieval cannot supply — the market,
+  // "latest", "today". The list lives in `agent/nodes/knowledge.js`; this appends to it.
+  MOONMIND_ESCALATION_TERMS: optionalList,
 
   // ---- Gemini embeddings --------------------------------------------------
   GEMINI_API_KEY: nonEmpty,
@@ -183,14 +191,19 @@ const envSchema = z.object({
   // ---- Retrieval ----------------------------------------------------------
   MOONMIND_VECTOR_NUM_CANDIDATES: positiveInt.default(150),
   MOONMIND_RRF_K: positiveInt.default(60),
-  MOONMIND_FINAL_DOCUMENT_LIMIT: positiveInt.default(10),
+  // 15 since the Phase 6 gate (Ayan, 2026-09-16): broad questions have 11-12 genuinely
+  // relevant documents (docs/evals/retrieval-ab.md, recall headroom), which 10 cut short.
+  MOONMIND_FINAL_DOCUMENT_LIMIT: positiveInt.default(15),
   MOONMIND_RETRIEVAL_CANDIDATE_LIMIT: positiveInt.default(30),
   MOONMIND_RRF_WEIGHT_SEMANTIC: nonNegativeFloat.default(1),
   MOONMIND_RRF_WEIGHT_KEYWORD: nonNegativeFloat.default(1),
   MOONMIND_RRF_WEIGHT_METADATA: nonNegativeFloat.default(0.5),
   MOONMIND_RANK_IMPACT_WEIGHT: nonNegativeFloat.default(0),
   MOONMIND_RANK_VERIFIED_WEIGHT: nonNegativeFloat.default(0),
-  MOONMIND_MIN_SEMANTIC_SCORE: z.coerce.number().min(0).max(1).default(0),
+  // 0.82 since the Phase 9 gate (Ayan, 2026-09-23), from docs/evals/retrieval-floor.md:
+  // trims every query's long tail while keeping broad-question recall. 0.84 would have
+  // made narrow answers exact, but cut "backend technologies" to 7 of 11 relevant.
+  MOONMIND_MIN_SEMANTIC_SCORE: z.coerce.number().min(0).max(1).default(0.82),
   MOONMIND_RERANK_ENABLED: booleanFlag(false),
   MOONMIND_RERANK_CANDIDATES: positiveInt.default(20),
   MOONMIND_DECOMPOSE_ENABLED: booleanFlag(false),
@@ -310,6 +323,8 @@ function loadConfig(env) {
       debugModels: raw.MOONMIND_DEBUG_MODELS,
       scopeGuardEnabled: raw.MOONMIND_SCOPE_GUARD_ENABLED,
       excludedTopics: raw.MOONMIND_EXCLUDED_TOPICS,
+      escalationMinTopScore: raw.MOONMIND_ESCALATION_MIN_TOP_SCORE,
+      escalationTerms: raw.MOONMIND_ESCALATION_TERMS,
     },
     tavily: {
       apiKey: raw.TAVILY_API_KEY,

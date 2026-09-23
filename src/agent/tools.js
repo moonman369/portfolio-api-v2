@@ -339,7 +339,16 @@ async function runArm({ query, plan, metadata, limit }, deps = {}) {
     console.warn("agent.tool.arm_failed", { failed });
   }
 
-  return rankDocuments(documents, limit ?? config.retrieval.finalDocumentLimit, { config });
+  // The semantic floor gates on similarity, so it only means something when the semantic
+  // arm ran. A pure metadata query has no similarity to gate on — every hit scores 0 —
+  // and applying the floor would make `metadata_filter` return nothing at all once
+  // MOONMIND_MIN_SEMANTIC_SCORE is above 0, which it is since Phase 9.
+  const ungated = plan?.retrieval_plan?.semantic !== true;
+
+  return rankDocuments(documents, limit ?? config.retrieval.finalDocumentLimit, {
+    config,
+    ...(ungated ? { minSemanticScore: 0 } : {}),
+  });
 }
 
 function createSemanticSearchTool(deps = {}) {
@@ -449,7 +458,7 @@ const metadataFilter = createMetadataFilterTool();
  * Route -> the tools that route's agent is built with. A route absent from this map gets
  * no tools at all.
  *
- * One entry, because Phase 7 left one agent. Phase 9's `action` is deliberately NOT an
+ * One entry, because Phase 7 left one agent. Phase 10's `action` is deliberately NOT an
  * agent and gets no entry here: its side effect runs in node code, not behind a model's
  * decision. Nothing gains a tool by accident, because gaining one means editing this
  * object — there is no calendar tool and no email tool anywhere in this file.

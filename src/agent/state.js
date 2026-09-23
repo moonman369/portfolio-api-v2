@@ -136,6 +136,14 @@ const State = Annotation.Root({
   // like "no, just the link" inherit the route of the exchange it is refining.
   previousRoute: lastValue(null),
 
+  // The knowledge -> agent escalation (Phase 9). `escalate` is knowledge's request for
+  // the hop and `escalationReason` says why, for the feed; `escalations` is the budget,
+  // counted by the hop itself in graph.js, never by the node asking for it. All three
+  // are per-turn: the budget is one hop per TURN, not per session.
+  escalate: lastValue(false),
+  escalationReason: lastValue(null),
+  escalations: lastValue(0),
+
   finalAnswer: lastValue(null),
   error: lastValue(null),
 });
@@ -153,6 +161,9 @@ const PER_TURN_RESET = Object.freeze({
   statsPayload: null,
   searchResults: [],
   retrievalDebug: null,
+  escalate: false,
+  escalationReason: null,
+  escalations: 0,
   finalAnswer: null,
   error: null,
 });

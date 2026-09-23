@@ -109,7 +109,7 @@ test("only the phases still to come are stubbed", () => {
   const live = ROUTES.filter((route) => !STUBBED_ROUTES.includes(route));
 
   // Phase 1: refusal + capabilities. Phase 2: stats. Phase 3b: knowledge (then
-  // `about_me`). Phase 6.5: greeting. Phase 8: agent. Phase 9 takes `action` off this
+  // `about_me`). Phase 6.5: greeting. Phase 8: agent. Phase 10 takes `action` off this
   // list — this is the tripwire for a forgotten stub.
   assert.deepEqual(live.sort(), [
     "agent",

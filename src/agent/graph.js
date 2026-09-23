@@ -22,6 +22,42 @@ const ROUTE_TO_NODE = Object.freeze(
 
 const FALLBACK_NODE = ROUTE_TO_NODE.refusal;
 
+// ---------------------------------------------------------------------------
+// The escalation hop: knowledge -> agent, at most once per turn
+// ---------------------------------------------------------------------------
+
+/** Hops per turn. The only escalation edge in the graph runs from `knowledge`. */
+const MAX_ESCALATIONS = 1;
+
+/**
+ * Pure function: where `knowledge` goes next. `knowledge` only *asks* (`escalate`); the
+ * budget is enforced here and counted by `escalationHop`, both owned by the graph, so a
+ * node that asks on every call — buggy, or a test fake built to — still gets one hop.
+ *
+ * The graph cannot loop even without the budget: `agent`'s only edge is to `generate`,
+ * so `knowledge` is never re-entered in a turn. The budget is what makes that a checked
+ * property rather than a fact about today's wiring.
+ */
+function routeAfterKnowledge(state) {
+  if (state.error) {
+    return "generate";
+  }
+  return state.escalate === true && (state.escalations ?? 0) < MAX_ESCALATIONS
+    ? "escalation"
+    : "generate";
+}
+
+/**
+ * The hop itself: spend the budget, hand over to `agent`. A node rather than an edge
+ * side effect because edges cannot write state — and as a node it appears in the Phase 4
+ * feed as its own `escalation` step, which is how you see that it fired (not `escalate`:
+ * LangGraph forbids a node sharing a name with a state channel). Deliberately not
+ * injectable: the budget must not be something a caller can replace.
+ */
+async function escalationHop(state) {
+  return { escalations: (state.escalations ?? 0) + 1 };
+}
+
 
 /**
  * Pure function from state to the next node name.
@@ -43,7 +79,7 @@ const FALLBACK_NODE = ROUTE_TO_NODE.refusal;
  *   5. `route`        — what the router decided.
  *   6. `refusal`      — unknown and unmapped.
  *
- * Nothing sets `activeFlow` today (step 3 is dormant, kept for Phase 9's mail flow), so in
+ * Nothing sets `activeFlow` today (step 3 is dormant, kept for Phase 10's mail flow), so in
  * practice the live order is 1, 2, 4, 5, 6.
  */
 function routeFromState(state, { topicChangeConfidence } = {}) {
@@ -130,6 +166,9 @@ function describeUpdate(update) {
     searchResults,
     finalAnswer,
     activeFlow,
+    escalate,
+    escalationReason,
+    escalations,
     error,
   } = update;
 
@@ -137,6 +176,8 @@ function describeUpdate(update) {
   if (routeConfidence !== undefined) described.confidence = routeConfidence;
   if (slots !== undefined) described.slots = slots;
   if (activeFlow !== undefined) described.activeFlow = activeFlow;
+  if (escalate === true) described.escalate = escalationReason ?? true;
+  if (escalations !== undefined) described.escalations = escalations;
 
   if (Array.isArray(documents)) {
     described.documents = documents.length;
@@ -248,7 +289,18 @@ function buildGraph({ nodes, checkpointer, topicChangeConfidence }) {
     generate: "generate",
   };
   graph.addEdge(START, "router").addConditionalEdges("router", selectNode, branchTargets);
-  branchNodes.forEach((route) => graph.addEdge(route, "generate"));
+
+  // Every branch goes to `generate`, except `knowledge`, which may hop to `agent` once.
+  // `agent` never escalates: its only edge is the ordinary one to `generate`.
+  graph.addNode("escalation", withErrorBoundary("escalation", escalationHop));
+  branchNodes
+    .filter((route) => route !== "knowledge")
+    .forEach((route) => graph.addEdge(route, "generate"));
+  graph.addConditionalEdges("knowledge", routeAfterKnowledge, {
+    escalation: "escalation",
+    generate: "generate",
+  });
+  graph.addEdge("escalation", "agent");
   graph.addEdge("generate", END);
 
   return graph.compile({ checkpointer });
@@ -257,6 +309,8 @@ function buildGraph({ nodes, checkpointer, topicChangeConfidence }) {
 module.exports = {
   buildGraph,
   routeFromState,
+  routeAfterKnowledge,
+  MAX_ESCALATIONS,
   withErrorBoundary,
   describeUpdate,
   debug,

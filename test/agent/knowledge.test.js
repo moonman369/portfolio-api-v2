@@ -66,11 +66,13 @@ const state = (overrides = {}) => ({
 // about_me node
 // ---------------------------------------------------------------------------
 
-test("writes documents and nothing else", async () => {
+test("writes documents and the escalation request, and nothing else", async () => {
   const retrieve = fakeRetrieve();
   const result = await createKnowledgeNode(nodeDeps(retrieve))(state());
 
-  assert.deepEqual(Object.keys(result), ["documents", "retrievalDebug"]);
+  // Phase 9: knowledge may ask for the hop to `agent`. It only asks — graph.js decides.
+  assert.deepEqual(Object.keys(result), ["documents", "retrievalDebug", "escalate", "escalationReason"]);
+  assert.equal(result.escalate, false);
   assert.deepEqual(result.documents.map((d) => d.id), ["a", "b"]);
   assert.equal(result.retrievalDebug, null, "off unless MOONMIND_RETRIEVAL_DEBUG is on");
   assert.equal(result.finalAnswer, undefined, "generate owns the answer");

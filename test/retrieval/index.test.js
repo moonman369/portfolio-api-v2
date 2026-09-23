@@ -69,6 +69,25 @@ test("ranked documents carry their scoring breakdown", async () => {
   assert.deepEqual(top.retrieval_sources, { semantic: 1 });
 });
 
+test("topSemanticScore is the pool's best match, measured before the gate drops anything", async () => {
+  // Phase 9's weak-retrieval signal. Taken from the whole pool, so a gate that drops
+  // every candidate still reports how close the best one came.
+  const gated = { ...CONFIG, retrieval: { ...CONFIG.retrieval, minSemanticScore: 0.95 } };
+
+  const result = await retrieve("q", base({ config: gated }));
+  assert.equal(result.documents.length, 0, "both hits are under the 0.95 floor");
+  assert.equal(result.topSemanticScore, 0.9);
+
+  const empty = await retrieve("q", base({ collection: fakeCollection([]) }));
+  assert.equal(empty.topSemanticScore, 0, "nothing matched at all");
+});
+
+test("the semantic floor drops candidates below it and keeps the rest", async () => {
+  const gated = { ...CONFIG, retrieval: { ...CONFIG.retrieval, minSemanticScore: 0.85 } };
+  const result = await retrieve("q", base({ config: gated }));
+  assert.deepEqual(result.documents.map((d) => d.id), ["a"]);
+});
+
 test("the final limit is honoured", async () => {
   const collection = fakeCollection(
     Array.from({ length: 25 }, (_, i) => hit(`d${i}`, { score: 0.5 })),

@@ -27,7 +27,7 @@ const RouterOutputSchema = z.object({
   // `stats_and_docs` route into this slot rather than keeping an eighth label — the same
   // shape as `action` below, and the composed node behind it is unchanged.
   withDocuments: z.boolean(),
-  // Which half of `action` is wanted. Both branches land in Phase 9.
+  // Which half of `action` is wanted. Both branches land in Phase 10.
   action: z.enum(["book", "mail"]).nullable(),
   cancelsActiveFlow: z.boolean(),
 });
