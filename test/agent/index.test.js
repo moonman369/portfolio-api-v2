@@ -14,7 +14,8 @@ process.env.TAVILY_API_KEY ??= "tvly-test";
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { runTurn, createNodes, STUBBED_ROUTES } = require("../../src/agent");
+const { runTurn, createNodes } = require("../../src/agent");
+const { NOT_IMPLEMENTED_ANSWER } = require("../../src/agent/prompts");
 const { ROUTES } = require("../../src/agent/state");
 
 /** Records what runTurn passes to the graph and replays a canned result. */
@@ -105,21 +106,15 @@ test("the production node set covers router, generate and every route", () => {
   });
 });
 
-test("only the phases still to come are stubbed", () => {
-  const live = ROUTES.filter((route) => !STUBBED_ROUTES.includes(route));
-
-  // Phase 1: refusal + capabilities. Phase 2: stats. Phase 3b: knowledge (then
-  // `about_me`). Phase 6.5: greeting. Phase 8: agent. Phase 10 takes `action` off this
-  // list — this is the tripwire for a forgotten stub.
-  assert.deepEqual(live.sort(), [
-    "agent",
-    "capabilities",
-    "greeting",
-    "knowledge",
-    "refusal",
-    "stats",
-  ]);
-  assert.deepEqual([...STUBBED_ROUTES].sort(), ["action"]);
+test("no route is stubbed any more: every node is real", async () => {
+  // The tripwire that used to list the stubbed routes. Phase 10 replaced the last one,
+  // `action`; a node answering "not implemented yet" now is a regression.
+  const nodes = createNodes();
+  const answer = await nodes.action(
+    { slots: { action: "book" }, messages: [], rawQuery: "book a call" },
+    { configurable: {} },
+  );
+  assert.notEqual(answer.finalAnswer, NOT_IMPLEMENTED_ANSWER);
 });
 
 test("the legacy tech_web label resolves to the same node as agent", () => {

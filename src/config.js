@@ -87,6 +87,8 @@ const envSchema = z.object({
   // never grows the database without bound.
   MONGO_RUNS_COLLECTION: nonEmpty.default("moonmind_runs"),
   MONGO_RUN_STEPS_COLLECTION: nonEmpty.default("moonmind_run_steps"),
+  // One row per mail the backend issued, cancelled, or heard back about (Phase 10).
+  MONGO_MAIL_EVENTS_COLLECTION: nonEmpty.default("mail_events"),
   MOONMIND_RUN_RETENTION_DAYS: positiveInt.default(7),
 
   // ---- GitHub stats refresh ---------------------------------------------
@@ -118,6 +120,27 @@ const envSchema = z.object({
   TAVILY_MAX_RESULTS: positiveInt.max(20).default(5),
   // "advanced" costs 2 credits per search instead of 1 and returns longer extracts.
   TAVILY_SEARCH_DEPTH: z.enum(["basic", "advanced"]).default("basic"),
+
+  // ---- The action node: scheduling link + mail (Phase 10) ----------------
+  // Booking is a link, nothing more: no calendar API, no availability check. Both values
+  // are Ayan's to set on the VM (decided at the Phase 10 gate), and the windows wording
+  // must say exactly what the Calendly event enforces — the bot repeats it verbatim.
+  // Unset, `book` says scheduling is unavailable rather than inventing either.
+  MOONMIND_CALENDLY_URL: z.string().trim().url().optional(),
+  MOONMIND_BOOKING_WINDOWS: z.string().trim().min(1).optional(),
+  // Web3Forms is submitted FROM THE BROWSER: its free plan answers a server-side call with
+  // 403 (paid plan + IP safelist only). The backend validates and composes the payload,
+  // and the frontend POSTs it verbatim. The key is public by Web3Forms' design, and the
+  // recipient is bound to it — no payload field can set one. Unset, `mail` is unavailable.
+  WEB3FORMS_ACCESS_KEY: z.string().trim().min(1).optional(),
+  WEB3FORMS_ENDPOINT: z.string().trim().url().default("https://api.web3forms.com/submit"),
+  // Caps are counted when the backend ISSUES a payload — the one point it controls.
+  MOONMIND_MAIL_MAX_PER_SESSION: positiveInt.default(3),
+  MOONMIND_MAIL_MAX_PER_IP: positiveInt.default(5),
+  MOONMIND_MAIL_WINDOW_HOURS: positiveInt.default(24),
+  MOONMIND_MAIL_MAX_BODY_CHARS: positiveInt.default(2000),
+  // The MX lookup that validates a visitor's address. An outbound call like any other.
+  MOONMIND_MAIL_DNS_TIMEOUT_MS: positiveInt.default(3000),
 
   // ---- MoonMind chat ------------------------------------------------------
   MOONMIND_PASSWORD: nonEmpty,
@@ -271,6 +294,7 @@ function loadConfig(env) {
       checkpointWritesCollection: raw.MONGO_CHECKPOINT_WRITES_COLLECTION,
       runsCollection: raw.MONGO_RUNS_COLLECTION,
       runStepsCollection: raw.MONGO_RUN_STEPS_COLLECTION,
+      mailEventsCollection: raw.MONGO_MAIL_EVENTS_COLLECTION,
       runRetentionDays: raw.MOONMIND_RUN_RETENTION_DAYS,
       vectorCollection: raw.MONGO_VECTOR_COLLECTION,
       vectorIndex: raw.MONGO_VECTOR_INDEX,
@@ -325,6 +349,19 @@ function loadConfig(env) {
       excludedTopics: raw.MOONMIND_EXCLUDED_TOPICS,
       escalationMinTopScore: raw.MOONMIND_ESCALATION_MIN_TOP_SCORE,
       escalationTerms: raw.MOONMIND_ESCALATION_TERMS,
+    },
+    action: {
+      calendlyUrl: raw.MOONMIND_CALENDLY_URL ?? null,
+      bookingWindows: raw.MOONMIND_BOOKING_WINDOWS ?? null,
+    },
+    mail: {
+      accessKey: raw.WEB3FORMS_ACCESS_KEY ?? null,
+      endpoint: raw.WEB3FORMS_ENDPOINT,
+      maxPerSession: raw.MOONMIND_MAIL_MAX_PER_SESSION,
+      maxPerIp: raw.MOONMIND_MAIL_MAX_PER_IP,
+      windowHours: raw.MOONMIND_MAIL_WINDOW_HOURS,
+      maxBodyChars: raw.MOONMIND_MAIL_MAX_BODY_CHARS,
+      dnsTimeoutMs: raw.MOONMIND_MAIL_DNS_TIMEOUT_MS,
     },
     tavily: {
       apiKey: raw.TAVILY_API_KEY,

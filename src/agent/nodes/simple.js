@@ -1,11 +1,10 @@
 "use strict";
 
-// The nodes that need no model call, plus the stubs standing in for routes that land in
-// later phases. Each returns only the keys it changes.
+// The nodes that need no model call. Each returns only the keys it changes.
+// (The last stub, `action`, was replaced by nodes/action.js in Phase 10.)
 
 const {
   REFUSAL_ANSWER,
-  NOT_IMPLEMENTED_ANSWER,
   buildCapabilitiesAnswer,
   buildGreetingAnswer,
 } = require("../prompts");
@@ -31,16 +30,4 @@ async function greeting(state) {
   return { finalAnswer: buildGreetingAnswer(state?.messages?.length ?? 0) };
 }
 
-/**
- * Placeholder for a route whose real node arrives in a later phase. It still writes a
- * `finalAnswer`, so the turn flows through `generate` exactly like a real branch.
- */
-function makeStubNode(name) {
-  return async function stub() {
-    // Only `finalAnswer`: `slots` uses a last-write-wins reducer, so writing it here
-    // would clobber what the router extracted.
-    return { finalAnswer: NOT_IMPLEMENTED_ANSWER };
-  };
-}
-
-module.exports = { refusal, listCapabilities, greeting, makeStubNode };
+module.exports = { refusal, listCapabilities, greeting };

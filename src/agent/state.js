@@ -127,8 +127,15 @@ const State = Annotation.Root({
   // `MOONMIND_RETRIEVAL_DEBUG` is on. See ARCHITECTURE.md and retrieval/index.js.
   retrievalDebug: lastValue(null),
 
+  // The mail flow (Phase 10). `activeFlow: "action"` holds the conversation in the
+  // action node across capture -> validate -> confirm; the draft lives in
+  // `slots.mailDraft`; `pendingConfirmation` is set only while a "yes" would send.
   pendingConfirmation: lastValue(null),
   activeFlow: lastValue(null),
+  // What the frontend must act on this turn, if anything: `{ type: "confirm", ... }` to
+  // show a confirm card, or `{ type: "submit", ... }` — the exact Web3Forms request for
+  // the browser to POST. Per-turn: an old card or payload must never be shown twice.
+  mailAction: lastValue(null),
   summary: lastValue(null),
   // The route the PREVIOUS turn took. Written by `generate` (the one node every branch
   // converges on) and deliberately absent from PER_TURN_RESET, so the router can read it
@@ -164,6 +171,7 @@ const PER_TURN_RESET = Object.freeze({
   escalate: false,
   escalationReason: null,
   escalations: 0,
+  mailAction: null,
   finalAnswer: null,
   error: null,
 });

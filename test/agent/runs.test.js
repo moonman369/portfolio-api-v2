@@ -193,6 +193,16 @@ test("finishRun records the answer and the documents that grounded it", async ()
   assert.ok(run.finishedAt instanceof Date);
 });
 
+test("finishRun records the mail action a turn produced, and null when there is none", async () => {
+  const deps = store();
+  await runs.startRun({ runId: "r1", sessionId: "s1", question: "q" }, deps);
+  assert.equal((await runs.getRun("r1", deps)).mail, null, "null while running");
+
+  const mail = { type: "submit", submissionId: "m1", body: "{}", digest: "d" };
+  await runs.finishRun({ runId: "r1", turn: { route: "action", answer: "Sending…", documents: [], mail } }, deps);
+  assert.deepEqual((await runs.getRun("r1", deps)).mail, mail);
+});
+
 test("finishRun records the agent's sources, and an empty list when there are none", async () => {
   const deps = store();
   await runs.startRun({ runId: "r1", sessionId: "s1", question: "q" }, deps);

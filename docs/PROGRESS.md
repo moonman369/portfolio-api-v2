@@ -249,23 +249,28 @@ relevance today" escalates and returns a web-grounded answer, before/after in
 `docs/evals/escalation.md`; a `stats` + `withDocuments` question does **not** escalate
 and a test says so; the recursion limit is never reached in any test.
 
-### `[ ]` Phase 10 — `action` node (`book` | `mail`)
-**Providers named by the playbook:** a Calendly scheduling link for `book`, Web3Forms for
-`mail`.
-**⛔ GATE first — still open for Ayan:** (1) the Calendly link, and the env var that holds
-it; (2) Web3Forms confirmed as the mail provider — the recipient is bound to the access
-key server-side, which satisfies "recipient fixed by config, never a tool argument";
-(3) how a visitor is shown the link / confirmation; (4) whether either branch needs
-multi-turn `slots` state at all, given both are deterministic and single-turn
-(ARCHITECTURE.md §5).
-**Scope:** `src/integrations/email.js` (plain JS, timeout); one `action` node, no agent,
-branching internally on `slots.action` (`'book'` | `'mail'`). `book` returns a templated
-scheduling link deterministically — no tool, no confirmation step. `mail` sends via
-`send_email` (**no recipient field** in its schema) deterministically. Replaces
-`book_catchup`/`send_mail` and the calendar/email tool-and-confirmation stack from the
-superseded Phase 6a/6b plan. Tight per-IP + sessionId rate limits for the action route.
-**Done when:** both branches covered by offline tests; `send_email`'s schema has no
-recipient; "send this to someone@else.com" still reaches only Ayan; the rate limit trips.
+### `[x]` Phase 10 — `action` node (`book` | `mail`)
+*Done 2026-09-25, backend half. **Delivery to Ayan's inbox is verified from the frontend,
+not here:** Web3Forms refuses server-side calls on its free plan, so the browser sends —
+the implementation brief is FRONTEND_INTEGRATION.md §11, and its acceptance list is the
+remaining evidence. Gate settled in Decisions (browser send; config-only Calendly; confirm
+card, no edit turn).*
+**Scope:** `nodes/action.js`, one node, no agent, no tool. `book`: templated windows +
+Calendly link, the router's `preference` reflected, no model call beyond routing. `mail`:
+a deterministic flow over `activeFlow: "action"`, `slots.mailDraft`, `pendingConfirmation`
+— capture (one extraction call, draft stored verbatim) → validate (syntax + MX, one
+re-entry) → confirm (exact draft + a confirm-card `mailAction`) → on a clear "yes", issue
+the byte-exact Web3Forms payload for the browser and record it `pending` in `mail_events`.
+`integrations/email.js`: validation, payload builder (no recipient field), `mail_events`
+with per-session / per-IP / body caps. `POST /mail/:submissionId/result` for the browser's
+report. The router holds flow replies deterministically and ends the flow on a real topic
+change. Stubs removed.
+**Done when (backend):** book returns windows + link with no extra model call and no
+availability claim; the full, email-first, invalid-address, someone-else's-address and
+cancel flows behave, offline and live; the sent body is byte-identical to the confirmed
+one; the payload has no recipient field; caps trip; a failed issue is never issued and a
+reported failure lands as `failed`; CLAUDE.md and ARCHITECTURE.md no longer describe calendar
+writes, a config recipient or `MOONMIND_OWNER_EMAIL`.
 
 ### `[ ]` Phase 11 — Cutover + final structure audit
 **Due BEFORE this phase starts, not at it:** Phase 0's CI/CD deploy and live parity run
@@ -1286,6 +1291,104 @@ wording trigger config-driven, as the brief required). `MOONMIND_MIN_SEMANTIC_SC
 
 ---
 
+### Phase 10 — action node — 2026-09-25
+
+**Shipped.** `book` and `mail` in one node, neither an agent, neither with a tool. 442
+offline tests pass (34 new). Live: router eval 45/45 + 13/13 with the new `preference`
+field; `docs/evals/action.md` PASS on six scenarios. **What is not verified here is
+delivery** — the browser sends (below), so that evidence is the frontend's §11.9.
+
+**Step 1 changed the plan, and was raised before building.** Three contract checks:
+1. Web3Forms: `POST https://api.web3forms.com/submit`, `access_key` required; `email`,
+   `subject`, `replyto`, `redirect`, `botcheck` optional; `ccemail`/`attachment`/`webhook`
+   paid. 250 submissions/month free (third-party pricing pages — Web3Forms' own returned
+   403 to the fetch). **Server-side calls get `403` unless the plan is paid and the server
+   IP safelisted.** That contradicted "server-side POST from `integrations/email.js`".
+2. No request field sets the primary recipient; it is bound to the key. Holds.
+3. Calendly free plan: webhooks are paid, but the REST API is on every plan including
+   Free — the brief's "no API access" was wrong. Link-only stands, as a choice.
+Ayan chose the browser send; the gate's two questions were answered the same session
+(Decisions).
+
+**The mail flow, as built.** capture (one `intent`-model extraction, draft stored in
+`slots.mailDraft` verbatim; the visitor's own words if extraction fails) → address
+(syntax + MX; a destination like "send this to x@y" is never taken as the sender, and the
+visitor is told it can only go to Ayan) → confirm (stored draft echoed + `mailAction`
+confirm card; `pendingConfirmation` carries the draft's fingerprint) → "yes" (fingerprint
+re-checked, caps re-checked, `pending` row written **before** the payload is released —
+an issue that cannot be recorded is not issued). Anything but a clear yes at the confirm
+step cancels (`cancelled` row). The body sent is `draft.body` untouched; the visitor's
+address travels in `email`/`replyto`, not appended to the message, so the confirmed text
+is the sent text.
+
+**Flow vs. router.** Flow replies — a cancel, a clear yes, an address — are recognised
+deterministically and held without a model call (a bare "yes" classified cold is a
+greeting at 1.0, i.e. a "confident topic change"). Other text goes to the classifier; a
+confident move elsewhere, or "book instead", ends the flow in the router so no later "yes"
+can send the abandoned draft. Tested: each bare reply is handled exactly once, by `action`.
+
+**Found and fixed while verifying.**
+- **The raw client IP would have been persisted.** LangGraph copies primitive
+  `configurable` values into checkpoint metadata (`propagateConfigurableToMetadata`), so
+  `clientIp` in the run config would have landed in Mongo with the thread. It is hashed in
+  `buildInvocation` before it enters the config; only `ipHash` reaches the graph.
+- **MX lookups failed open on every address on this machine.** A scoped `dns.Resolver`
+  does not inherit `dns.setServers()`, so on a resolver that refuses queries (the reason
+  `MONGO_DNS_SERVERS` exists) every lookup errored `ECONNREFUSED` and — by design — passed
+  unverified, typo'd domains included. The MX resolver now uses `MONGO_DNS_SERVERS` too.
+  Live: gmail.com, moonman.in pass; gmial.cmo, gmial.con and example.com (null MX) fail.
+- **Drafts spoke about Ayan in the third person** ("I want to talk to Ayan about…" in a
+  message *to* Ayan). Extraction prompt now addresses him as "you".
+- **A Phase 9 PROGRESS edit had eaten the first line of a Decisions entry** ("Phase
+  numbering restored"); restored.
+
+**Files.** New: `src/agent/nodes/action.js`, `src/integrations/email.js`,
+`scripts/action-eval.js`, `docs/evals/action.md`, `test/agent/action.test.js`,
+`test/integrations/email.test.js`. Changed: `nodes/router.js` (`preference`, flow hold),
+`nodes/simple.js` (stub removed), `state.js` (`mailAction`), `prompts.js` (extraction
+prompt + action copy), `index.js` (action node, `ipHash`, `mail` in the turn,
+`reportMailResult`), `runs.js` (`mail` on the run), `http/chat.js` (`mail`, `req.ip`, the
+report route), `http/openapi.js`, `config.js`, `.env.example`, `CLAUDE.md` guardrails,
+`docs/ARCHITECTURE.md` §1/§4/§5, `docs/FRONTEND_INTEGRATION.md` (§2-§4, §9-§10, new §11).
+`MOONMIND_OWNER_EMAIL` never existed in code; it is now gone from the docs too.
+
+**Env vars.** Ten added, total 95: `MOONMIND_CALENDLY_URL`, `MOONMIND_BOOKING_WINDOWS`,
+`WEB3FORMS_ACCESS_KEY`, `WEB3FORMS_ENDPOINT`, `MOONMIND_MAIL_MAX_PER_SESSION` (3),
+`MOONMIND_MAIL_MAX_PER_IP` (5), `MOONMIND_MAIL_WINDOW_HOURS` (24),
+`MOONMIND_MAIL_MAX_BODY_CHARS` (2000), `MOONMIND_MAIL_DNS_TIMEOUT_MS` (3000),
+`MONGO_MAIL_EVENTS_COLLECTION` (`mail_events`). The first three are optional at boot;
+without them `book` / `mail` say they are unavailable.
+
+**Deviations.** Four, recorded below (51-54).
+
+**Open items.**
+1. **Set `MOONMIND_CALENDLY_URL`, `MOONMIND_BOOKING_WINDOWS` and `WEB3FORMS_ACCESS_KEY` on
+   the VM.** The live eval ran on labelled placeholders for all three.
+2. **Delivery is unverified until the frontend ships §11.** Its acceptance list (§11.9) is
+   the "full flow → Ayan's inbox" evidence this phase's brief asked for.
+3. **This machine cannot reach Atlas** (TLS alert 80 — typically the current IP missing
+   from the Atlas access list), so the live eval ran with `--memory`: routing, extraction
+   and MX live; checkpoints and `mail_events` in memory. `mail_events` persistence is
+   covered offline only. Re-run `node --env-file=.env scripts/action-eval.js` without the
+   flag once access is restored — it cleans up its own rows.
+4. **`mail_events` has no TTL.** It holds addresses and subjects (never bodies) and is an
+   audit log, so nothing expires it; decide a retention if that matters.
+5. **Transient DNS failures fail open** (`verified: false`), so a typo'd domain passes
+   while the resolver is down. The address is only ever a reply-to, so the cost is a
+   bounced reply, not misdelivery.
+6. **File sizes:** `action.js` 344 (new), `email.js` 267, `router.js` 282, `chat.js` 283
+   now join the over-250 list (`prompts.js` 679, `openapi.js` 556, `tools.js`, `index.js`,
+   `runs.js`, `graph.js`, `agents.js`). The obvious cut — `nodes/mail.js` out of
+   `action.js` — adds a file to the ARCHITECTURE layout, so it is for the Phase 11 audit.
+7. **A timing-based test is flaky under load:** `POST /runs answers 202 …` in
+   `test/http/runs.test.js` relies on a 50 ms timer; it failed once in four full runs
+   this phase (pre-existing, unchanged).
+8. **Carried over:** Phase 0's deploy and parity run (**due before Phase 11**), Phase 2's
+   `stats-eval`, Phase 3a's `retrieval-parity`, Phase 3b's `knowledge-eval` (now also
+   against the 0.82 floor), Phase 4's two live re-checks, Phase 8's `MOONMIND_AGENT_MODEL`.
+
+---
+
 ## Decisions
 
 *(One line per decision: what was decided, by whom, and why. Append as they are made.)*
@@ -1385,8 +1488,31 @@ wording trigger config-driven, as the brief required). `MOONMIND_MIN_SEMANTIC_SC
   (within X of the top score) were rejected by the same data: the "About Ayan" document is
   the top hit for 7 of 18 queries and inflates the top score for anything naming him.
   `config.js`'s k default also moved 10 → 15 to match the Phase 6 decision.
-: 9 = escalation hop, 10 = action
+- **2026-09-23 — Phase numbering restored** (Ayan): 9 = escalation hop, 10 = action
   node, 11 = cutover + final structure audit. See the note above Phase 9's checklist.
+  *(This entry's first line was lost by an edit in the Phase 9 commit and restored in
+  Phase 10.)*
+- **2026-09-25 — Mail is sent from the browser** (Ayan, at the Phase 10 gate). Step 1's
+  contract check found Web3Forms answers a server-side call with `403: This method is not
+  allowed` unless the account is paid **and** the server IP safelisted by their support.
+  Of the three options — pay, send from the browser, or switch to a provider that allows
+  server-side sends (which brings a config recipient back) — Ayan chose the browser. The
+  backend still validates, shows the exact draft, and issues the byte-exact payload only
+  after an explicit yes; the frontend POSTs it and reports back. **Accepted costs:** the
+  backend cannot prove the bytes sent equal the bytes issued (the reported SHA-256 makes a
+  change visible, not impossible); caps bind at issuance, not at send; `sent`/`failed` is
+  whatever the browser reports.
+- **2026-09-25 — Calendly link and bookable windows are config-only** (Ayan):
+  `MOONMIND_CALENDLY_URL` + `MOONMIND_BOOKING_WINDOWS`, set on the VM, no values in the
+  repo. Until both are set, `book` says scheduling is unavailable. The windows text must
+  match what the Calendly event enforces — the bot repeats it verbatim. Also recorded:
+  Calendly's **free plan does have a REST API** (its developer FAQ: "any subscription plan,
+  including the Free plan"); only webhooks are paid. Link-only is therefore a design
+  choice, not a platform limit — polling could not tie a booking to a visitor anyway.
+- **2026-09-25 — Confirmation is confirm/cancel only, shown as a card** (Ayan). The
+  confirm turn carries `mailAction: { type: "confirm", display: "confirm_card", … }` so the
+  frontend renders a card whose buttons send "yes"/"no" as ordinary messages. No edit
+  turn: anything but a clear yes cancels, and the draft is never re-extracted.
 
 ---
 
@@ -2238,3 +2364,25 @@ clean `npm ci`. One line to delete; left alone because it is outside what was as
     forbids a node sharing a name with a state channel. The handover reaches the agent in
     its **system prompt** via `runtime.context`, not as a message, so the conversation it
     sees is exactly the visitor's.
+
+## Phase 10 deviations from LLD
+
+51. **The mail send happens in the browser.** The LLD's `send_mail` sends server-side
+    through a `send_email` tool behind a confirmation. Web3Forms' free plan refuses
+    server-side calls (Decisions, 2026-09-25), so the backend's last act is issuing the
+    byte-exact payload after the yes; the frontend POSTs it and reports back to
+    `POST /mail/:submissionId/result`. There is no `send_email` tool at all — `action` has
+    no tools — and no config recipient: the Web3Forms key binds it.
+52. **`activeFlow` is `"action"`, not `"mail"`.** The brief named the flow `'mail'`, but
+    `routeFromState` dispatches `activeFlow` by node name, and the node is `action`; the
+    mail half is `slots.action === "mail"`. A `"mail"` value would have needed a second
+    flow-to-node map for one flow.
+53. **The first unreachable address keeps the flow open for one re-entry.** The brief said
+    both "decline and end the flow (clear everything)" and "invite them to re-enter it —
+    allow one re-entry, then stop"; a re-entry into a cleared flow would be routed as a
+    fresh message and lost. So the first failure keeps the draft and asks again, and the
+    second ends the flow and clears everything. Nothing is ever sent in either case.
+54. **The router now writes `activeFlow` and `pendingConfirmation`** — only when it ends
+    the mail flow on a real topic change. Before Phase 10 it wrote route and slots only.
+    Leaving the flow anywhere else (e.g. in `generate`) would have let an abandoned draft
+    survive into the next turn, where a bare "yes" would send it.

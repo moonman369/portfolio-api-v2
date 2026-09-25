@@ -65,7 +65,9 @@ const ROUTER_SYSTEM_PROMPT = [
   "  about him is knowledge, however many sources it would take to answer.",
   "- `confidence` is how certain you are, from 0 to 1. Be honest: a vague or ambiguous",
   "  message should score low. Do not inflate it.",
-  "- `which` and `withDocuments` matter only for stats; `action` only for action.",
+  "- `which` and `withDocuments` matter only for stats; `action` and `preference` only for",
+  "  action. `preference` is the day or time the visitor asked to book, in their words",
+  '  ("Tuesday afternoon", "next week"), or null. Never guess one.',
   "- `cancelsActiveFlow` is true only when the user is explicitly abandoning an",
   '  in-progress task, e.g. "cancel", "never mind", "forget it", "stop".',
 ].join("\n");
@@ -520,6 +522,112 @@ function buildGreetingAnswer(messageCount = 0) {
   return GREETINGS[index];
 }
 
+// ---------------------------------------------------------------------------
+// The action node (Phase 10): a scheduling link, and mail in a confirmed flow
+// ---------------------------------------------------------------------------
+
+// The one model call in the mail flow: turning the request into a draft, once. The draft
+// is then stored and never regenerated — the visitor confirms exactly these words.
+const MAIL_CAPTURE_PROMPT = [
+  "You turn a visitor's request into a message for Ayan Maiti. Return:",
+  "- senderName: the visitor's own name if they state it, else null.",
+  "- senderEmail: the visitor's OWN email address, only if they give it as theirs so Ayan",
+  "  can reply. An address they want the message sent TO, forwarded to or copied to is NOT",
+  "  senderEmail: leave it in the body and set senderEmail to null.",
+  "- subject: a short subject line, under 80 characters, in the visitor's terms, or null.",
+  "- body: the message itself. If they wrote the message, use their words exactly. If they",
+  '  only named a topic ("about a backend role"), write one or two plain first-person',
+  '  sentences addressed to Ayan as "you", saying what they want to talk about ("I\'d like',
+  '  to talk to you about a backend role."). Never invent a name, company,',
+  "  date, number or detail they did not give, and never add a greeting or signature.",
+].join("\n");
+
+const BOOKING_UNAVAILABLE_ANSWER =
+  "Booking a call through me isn't set up right now. You can still send Ayan a message here, and he'll get back to you.";
+
+const ACTION_CLARIFY_ANSWER =
+  "Happy to help you reach Ayan. Would you like to book a call with him, or send him a message?";
+
+/**
+ * The `book` answer: the configured windows, stated as configured, and the link. Nothing
+ * here knows his availability or whether a booking exists, and the copy never implies it.
+ */
+function buildBookingAnswer({ calendlyUrl, bookingWindows, preference }) {
+  const lines = [`You can book a call with Ayan here: ${calendlyUrl}`, ""];
+  lines.push(`Ayan's bookable windows: ${bookingWindows}`);
+  lines.push(
+    preference
+      ? `You mentioned ${preference} — pick whichever open slot suits you on that page. I can't see his calendar, so I can't promise a particular time is free.`
+      : "The page shows which slots are open — I can't see his calendar from here.",
+  );
+  lines.push("", "Calendly confirms the booking by email once you pick a slot.");
+  return lines.join("\n");
+}
+
+const MAIL_UNAVAILABLE_ANSWER =
+  "Sending messages through me isn't set up right now, sorry. Nothing was sent.";
+
+function buildMailCapReachedAnswer() {
+  return "You've sent as many messages as I can pass on for now. Please try again later — nothing new was sent.";
+}
+
+function buildMailTooLongAnswer(maxChars) {
+  return `That message is longer than I can pass on (${maxChars} characters at most). Could you shorten it and ask me again? Nothing was sent.`;
+}
+
+const MAIL_ASK_EMAIL_ANSWER = [
+  "I can pass that on to Ayan. What email address should he reply to?",
+  "",
+  "I only need it so he can get back to you. Nothing is sent until you've seen the message and confirmed it.",
+].join("\n");
+
+/**
+ * An address that failed validation. MX tells us the DOMAIN cannot take mail; it says
+ * nothing about whether a mailbox exists, so this never claims the address "doesn't
+ * exist". `final` is the second failure: the flow ends and nothing is sent.
+ */
+function buildMailAddressDeclinedAnswer({ address, reason, final }) {
+  const why =
+    reason === "syntax"
+      ? `"${address}" doesn't look like a complete email address`
+      : `"${address}" doesn't look like it can receive email — its domain isn't set up to accept mail`;
+
+  return final
+    ? `${why} either, so I've stopped here and nothing was sent. You can start again any time by asking me to send Ayan a message.`
+    : `${why}, so Ayan wouldn't be able to reply. Could you check it and send it again?`;
+}
+
+/** The confirmation step: the exact message, read from the stored draft, not rewritten. */
+function buildMailConfirmationAnswer(draft) {
+  const from = draft.senderName ? `${draft.senderName} <${draft.senderEmail}>` : draft.senderEmail;
+  const quoted = String(draft.body)
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+
+  return [
+    "Here's exactly what will be sent:",
+    "",
+    "**To:** Ayan Maiti",
+    `**From:** ${from} — Ayan can reply to this address`,
+    `**Subject:** ${draft.subject}`,
+    "",
+    quoted,
+    "",
+    "Reply **yes** to send it, or **no** to cancel.",
+  ].join("\n");
+}
+
+/** Said once, when the request named somewhere else to send it: nothing can go there. */
+function buildMailOnlyToAyanNote(address) {
+  return `Just so you know: I can only pass messages to Ayan, so this won't go to ${address}.`;
+}
+
+const MAIL_SENDING_ANSWER = "Sending it to Ayan now…";
+const MAIL_CANCELLED_ANSWER = "Okay — I haven't sent anything. Let me know if you'd like to try again.";
+const MAIL_ISSUE_FAILED_ANSWER =
+  "Something went wrong on my side before your message could be sent, so nothing was sent. Please try again in a moment.";
+
 /** The capabilities answer, templated from the route enum. */
 function buildCapabilitiesAnswer() {
   const lines = ROUTES.filter((route) => !HIDDEN_CAPABILITIES.includes(route))
@@ -554,4 +662,18 @@ module.exports = {
   buildCapabilitiesAnswer,
   GREETINGS,
   buildGreetingAnswer,
+  MAIL_CAPTURE_PROMPT,
+  BOOKING_UNAVAILABLE_ANSWER,
+  ACTION_CLARIFY_ANSWER,
+  buildBookingAnswer,
+  MAIL_UNAVAILABLE_ANSWER,
+  buildMailCapReachedAnswer,
+  buildMailTooLongAnswer,
+  MAIL_ASK_EMAIL_ANSWER,
+  buildMailAddressDeclinedAnswer,
+  buildMailConfirmationAnswer,
+  buildMailOnlyToAyanNote,
+  MAIL_SENDING_ANSWER,
+  MAIL_CANCELLED_ANSWER,
+  MAIL_ISSUE_FAILED_ANSWER,
 };

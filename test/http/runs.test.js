@@ -421,3 +421,97 @@ test("a run stored before sources existed reports an empty list, not an error", 
     restore();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Phase 10: mail in the feed, and the browser's report-back
+// ---------------------------------------------------------------------------
+
+const SUBMISSION_ID = "22222222-2222-4222-8222-222222222222";
+const DIGEST = "a".repeat(64);
+
+test("the feed returns the mail action a run produced, and null otherwise", async () => {
+  const mail = { type: "confirm", display: "confirm_card", body: "hello" };
+  const restore = stub(runs, {
+    getRun: async () => finishedRun({ route: "action", documents: [], mail }),
+    listSteps: async () => [],
+  });
+
+  try {
+    await withServer(async (base) => {
+      assert.deepEqual((await (await call(base, `${P}/runs/${RUN_ID}`)).json()).data.mail, mail);
+    });
+  } finally {
+    restore();
+  }
+
+  const restorePlain = stub(runs, { getRun: async () => finishedRun(), listSteps: async () => [] });
+  try {
+    await withServer(async (base) => {
+      assert.equal((await (await call(base, `${P}/runs/${RUN_ID}`)).json()).data.mail, null);
+    });
+  } finally {
+    restorePlain();
+  }
+});
+
+test("POST /mail/:id/result records the browser's outcome", async () => {
+  const seen = [];
+  const restore = stub(agent, {
+    reportMailResult: async (report) => {
+      seen.push(report);
+      return { outcome: "recorded", row: { status: report.status, digestMatches: true } };
+    },
+  });
+
+  try {
+    await withServer(async (base) => {
+      const response = await call(base, `${P}/mail/${SUBMISSION_ID}/result`, {
+        method: "POST",
+        body: { status: "sent", digest: DIGEST },
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual((await response.json()).data, { submissionId: SUBMISSION_ID, status: "sent", digestMatches: true });
+      assert.deepEqual(seen, [{ submissionId: SUBMISSION_ID, status: "sent", digest: DIGEST }]);
+    });
+  } finally {
+    restore();
+  }
+});
+
+test("the mail report answers 404 for an unknown id and 409 for a second report", async () => {
+  let outcome = "not_found";
+  const restore = stub(agent, { reportMailResult: async () => ({ outcome, row: { status: "sent" } }) });
+
+  try {
+    await withServer(async (base) => {
+      const path = `${P}/mail/${SUBMISSION_ID}/result`;
+      assert.equal((await call(base, path, { method: "POST", body: { status: "sent" } })).status, 404);
+      outcome = "already_final";
+      const conflict = await call(base, path, { method: "POST", body: { status: "failed" } });
+      assert.equal(conflict.status, 409);
+      assert.equal((await conflict.json()).code, "MAIL_ALREADY_REPORTED");
+    });
+  } finally {
+    restore();
+  }
+});
+
+test("the mail report validates its input and requires the password", async () => {
+  const restore = stub(agent, {
+    reportMailResult: async () => {
+      throw new Error("must not be called");
+    },
+  });
+
+  try {
+    await withServer(async (base) => {
+      const path = `${P}/mail/${SUBMISSION_ID}/result`;
+      assert.equal((await call(base, path, { method: "POST", password: null, body: { status: "sent" } })).status, 401);
+      assert.equal((await call(base, `${P}/mail/not-a-uuid/result`, { method: "POST", body: { status: "sent" } })).status, 400);
+      assert.equal((await call(base, path, { method: "POST", body: { status: "delivered" } })).status, 400);
+      assert.equal((await call(base, path, { method: "POST", body: { status: "sent", digest: "short" } })).status, 400);
+    });
+  } finally {
+    restore();
+  }
+});

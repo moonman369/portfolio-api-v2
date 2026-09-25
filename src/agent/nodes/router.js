@@ -1,8 +1,11 @@
 "use strict";
 
 // The router: one structured-output classification per turn, with a deterministic
-// fallback. It only ever writes `route`, `routeConfidence` and `slots` — the decision
-// about which node that maps to belongs to `routeFromState` in graph.js.
+// fallback. It writes `route`, `routeConfidence` and `slots` — the decision about which
+// node that maps to belongs to `routeFromState` in graph.js. The one exception is the mail
+// flow (Phase 10): a reply the flow is waiting for is held without a model call, and a
+// confident change of subject ends the flow here, clearing `activeFlow` and
+// `pendingConfirmation` so a later "yes" can never send a draft the visitor walked away from.
 
 const { z } = require("zod");
 const { HumanMessage, SystemMessage } = require("@langchain/core/messages");
@@ -16,6 +19,7 @@ const {
   restoreLegacySlots,
 } = require("../state");
 const { ROUTER_SYSTEM_PROMPT, buildRouterContext, CANNED_DEAD_ENDS } = require("../prompts");
+const { inMailFlow, isMailFlowReply } = require("./action");
 
 // Flat on purpose: models fill a flat object far more reliably than a nested one.
 // `which`, `withDocuments` and `action` are lifted into `slots` before they reach state.
@@ -27,10 +31,16 @@ const RouterOutputSchema = z.object({
   // `stats_and_docs` route into this slot rather than keeping an eighth label — the same
   // shape as `action` below, and the composed node behind it is unchanged.
   withDocuments: z.boolean(),
-  // Which half of `action` is wanted. Both branches land in Phase 10.
+  // Which half of `action` is wanted.
   action: z.enum(["book", "mail"]).nullable(),
+  // A day or time the visitor asked to book ("Tuesday afternoon"). Only ever echoed back
+  // as their own words — `book` never promises it.
+  preference: z.string().nullable(),
   cancelsActiveFlow: z.boolean(),
 });
+
+// A preference is echoed into the answer, so it is kept short.
+const PREFERENCE_MAX_CHARS = 60;
 
 // Where an unusable classification lands. knowledge is the safe default: it is the most
 // common intent, it is grounded in retrieved documents, and it cannot cause a side
@@ -38,7 +48,7 @@ const RouterOutputSchema = z.object({
 // MoonMind never answers with a generic refusal.
 const LOW_CONFIDENCE_ROUTE = "knowledge";
 
-function toSlots({ route, which, withDocuments, action }) {
+function toSlots({ route, which, withDocuments, action, preference }) {
   // Each slot is dropped everywhere it is meaningless, so a stray value from the model
   // cannot influence a node that has no business reading it.
   const slots = {};
@@ -50,8 +60,21 @@ function toSlots({ route, which, withDocuments, action }) {
   if (route === "action" && action) {
     slots.action = action;
   }
+  const trimmed = typeof preference === "string" ? preference.trim() : "";
+  if (route === "action" && action === "book" && trimmed) {
+    slots.preference = trimmed.slice(0, PREFERENCE_MAX_CHARS);
+  }
 
   return slots;
+}
+
+/** Keep the mail flow where it is: the draft rides along, since `slots` is last-write-wins. */
+function holdMailFlow(state, confidence, cancelsActiveFlow = false) {
+  return {
+    route: "action",
+    routeConfidence: confidence,
+    slots: { action: "mail", mailDraft: state.slots?.mailDraft ?? null, cancelsActiveFlow },
+  };
 }
 
 /**
@@ -152,6 +175,15 @@ function createRouterNode(deps = {}) {
     const history = recentMessages(routerHistory(state.messages ?? []), window);
     const { current, turns } = splitForRouter(history);
 
+    // The mail flow is waiting on exactly one of a few replies — "yes", "no", an address.
+    // Those are recognised deterministically and never reach the model: a bare "yes"
+    // classified cold is a greeting at confidence 1.0, which would read as a topic change
+    // and walk out of the flow with the visitor's confirmation in hand.
+    const mailFlow = inMailFlow(state);
+    if (mailFlow && isMailFlowReply(current, state)) {
+      return holdMailFlow(state, 1);
+    }
+
     // `previousRoute` is where an old taxonomy actually reaches this one: unlike `route`
     // it survives the per-turn reset, so a live thread hands the router a name that no
     // longer exists. Translate it before it is shown to the model or tested for
@@ -178,6 +210,11 @@ function createRouterNode(deps = {}) {
         sessionId: state.sessionId,
         reason: error?.message,
       });
+      // Mid-flow, an unusable classification stays in the flow: the action node treats
+      // anything that is not a clear "yes" as a cancel, so holding can never send.
+      if (mailFlow) {
+        return holdMailFlow(state, 0);
+      }
       // Confidence 0 through the same rule the unsure path uses, so a failed
       // classification mid-exchange continues that exchange rather than resetting it.
       return {
@@ -191,6 +228,21 @@ function createRouterNode(deps = {}) {
         routeConfidence: 0,
         slots: {},
       };
+    }
+
+    // Anything else said mid-flow: the flow keeps it unless the visitor has confidently
+    // moved on (MOONMIND_TOPIC_CHANGE_CONFIDENCE, the same bar `routeFromState` uses). A
+    // cancel stays too — the action node ends the flow and says so. A real topic change
+    // ends the flow HERE, and the turn goes wherever the new question belongs.
+    // Asking to book instead is a move too, into the other half of `action`.
+    if (mailFlow) {
+      const movedOn =
+        output.cancelsActiveFlow !== true &&
+        ((output.route === "action" && output.action === "book") ||
+          (output.route !== "action" && output.confidence >= moonmind.topicChangeConfidence));
+      if (!movedOn) {
+        return holdMailFlow(state, output.confidence, output.cancelsActiveFlow === true);
+      }
     }
 
     const route = applyConfidenceFloor(
@@ -215,6 +267,8 @@ function createRouterNode(deps = {}) {
       route,
       routeConfidence: output.confidence,
       slots: { ...slots, cancelsActiveFlow: output.cancelsActiveFlow === true },
+      // Leaving the mail flow: the draft is already gone with `slots`; clear the rest.
+      ...(mailFlow ? { activeFlow: null, pendingConfirmation: null } : {}),
     };
   };
 }
