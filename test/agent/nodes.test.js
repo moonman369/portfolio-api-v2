@@ -22,7 +22,6 @@ const {
   refusal,
   listCapabilities,
   greeting,
-  makeStubNode,
 } = require("../../src/agent/nodes/simple");
 const { ROUTES, recentMessages } = require("../../src/agent/state");
 const {
@@ -271,13 +270,6 @@ test("a repeat greeting in one session is not word-for-word identical", async ()
 
   assert.notEqual(later.finalAnswer, first.finalAnswer);
   assert.ok(GREETINGS.includes(later.finalAnswer));
-});
-
-test("stub nodes answer without clobbering router slots", async () => {
-  const result = await makeStubNode("knowledge")();
-
-  assert.equal(result.finalAnswer, NOT_IMPLEMENTED_ANSWER);
-  assert.equal(result.slots, undefined, "must not overwrite slots");
 });
 
 // ---------------------------------------------------------------------------

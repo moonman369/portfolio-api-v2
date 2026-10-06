@@ -54,12 +54,67 @@ function toResponseDocuments(documents) {
   });
 }
 
+/**
+ * Shape the agent's sources for the response — web results and document references.
+ *
+ * Entry for entry in the `documents` shape, so a source panel that renders `documents`
+ * renders these with the same code. A web result's link sits in
+ * `metadata.external_links`, where a document's links already live. `kind` and `url` are
+ * the two keys a document entry does not have. The agent can hit the same source twice
+ * (two searches, overlapping results), so repeats are dropped, first one wins.
+ */
+function toResponseSources(sources) {
+  if (!Array.isArray(sources)) {
+    return [];
+  }
+
+  const seen = new Set();
+  const shaped = [];
+
+  sources.forEach((source) => {
+    const web = source?.kind !== "document";
+    const key = web ? source?.url : source?.id;
+    if (!key || seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+
+    shaped.push({
+      id: key,
+      title: source?.title || key,
+      category: web ? "web" : null,
+      tags: [],
+      content_full: web ? source?.content || null : null,
+      metadata: web ? { external_links: { source: source.url } } : {},
+      score: web ? (source?.score ?? null) : null,
+      semantic_score: null,
+      retrieval_sources: [],
+      rrf_score: null,
+      retrieval_score: null,
+      boost_score: null,
+      kind: web ? "web" : "document",
+      url: web ? source.url : null,
+    });
+  });
+
+  return shaped;
+}
+
 // `since` is the last seq the caller already holds; absent means "from the start".
 const feedQuerySchema = z.object({
   since: z.coerce.number().int().min(0).default(0),
 });
 
 const runIdSchema = z.string().uuid();
+
+// What the browser reports after POSTing a mail payload to Web3Forms. `digest` is the
+// SHA-256 of the exact bytes it sent, so a payload altered on the way shows up as a
+// mismatch in `mail_events` rather than silently.
+const mailResultSchema = z.object({
+  status: z.enum(["sent", "failed"]),
+  digest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  providerMessage: z.string().max(300).optional(),
+});
 
 /** Shape one run for the feed. Steps are already summarized and clipped by `runs.js`. */
 function toFeedResponse(run, steps, since) {
@@ -76,6 +131,8 @@ function toFeedResponse(run, steps, since) {
     documents: toResponseDocuments(run.documents),
     documentIds: run.documentIds ?? [],
     documentCount: run.documentCount ?? 0,
+    sources: toResponseSources(run.sources),
+    mail: run.mail ?? null,
     startedAt: run.startedAt,
     finishedAt: run.finishedAt,
     steps: steps.map(({ seq, node, type, ts, summary }) => ({ seq, node, type, ts, summary })),
@@ -105,7 +162,7 @@ function createChatRouter() {
     const sessionId = parsed.data.sessionId ?? crypto.randomUUID();
     const message = parsed.data.message ?? parsed.data.prompt;
 
-    const turn = await agent.runTurn({ sessionId, message });
+    const turn = await agent.runTurn({ sessionId, message, clientIp: req.ip });
 
     return res.status(200).json({
       status: "success",
@@ -115,6 +172,10 @@ function createChatRouter() {
         route: turn.route,
         answer: turn.answer,
         documents: toResponseDocuments(turn.documents),
+        // The agent's citations. Empty for every route that does not run the agent.
+        sources: toResponseSources(turn.searchResults),
+        // Phase 10: a mail confirm card, or the Web3Forms request for the browser to POST.
+        mail: turn.mail ?? null,
         // Extra field, gated on MOONMIND_RETRIEVAL_DEBUG, never part of the normal
         // response shape. Ids and titles only — see retrieval/index.js.
         ...(retrieval.debugEnabled ? { retrievalDebug: turn.retrievalDebug } : {}),
@@ -139,7 +200,7 @@ function createChatRouter() {
 
     // `completed` is deliberately not awaited — the run outlives this request, and
     // `driveRun` already records its own failure rather than rejecting.
-    const { runId } = await agent.startRun({ sessionId, message });
+    const { runId } = await agent.startRun({ sessionId, message, clientIp: req.ip });
 
     return res.status(202).json({ status: "success", data: { runId, sessionId } });
   });
@@ -178,7 +239,45 @@ function createChatRouter() {
     return res.status(200).json({ status: "success", data: toFeedResponse(run, steps, since) });
   });
 
+  // The mail report-back (Phase 10). The backend never sends mail — the browser does,
+  // because Web3Forms refuses server-side calls on its free plan — so this is how
+  // `mail_events` learns whether a message it issued was delivered.
+  router.post("/mail/:submissionId/result", requirePassword, async (req, res) => {
+    const submissionId = runIdSchema.safeParse(req.params.submissionId);
+    const body = mailResultSchema.safeParse(req.body ?? {});
+    if (!submissionId.success || !body.success) {
+      return res.status(400).json({
+        status: "error",
+        message: submissionId.success ? body.error.issues[0].message : "submissionId must be a UUID",
+        code: "INVALID_REQUEST",
+      });
+    }
+
+    const result = await agent.reportMailResult({ submissionId: submissionId.data, ...body.data });
+
+    if (result.outcome === "not_found") {
+      return res.status(404).json({ status: "error", message: "No mail with that id", code: "MAIL_NOT_FOUND" });
+    }
+    if (result.outcome === "already_final") {
+      return res.status(409).json({
+        status: "error",
+        message: "That mail's outcome was already reported",
+        code: "MAIL_ALREADY_REPORTED",
+      });
+    }
+    return res.status(200).json({
+      status: "success",
+      data: { submissionId: submissionId.data, status: result.row.status, digestMatches: result.row.digestMatches },
+    });
+  });
+
   return router;
 }
 
-module.exports = { createChatRouter, buildBodySchema, toResponseDocuments, toFeedResponse };
+module.exports = {
+  createChatRouter,
+  buildBodySchema,
+  toResponseDocuments,
+  toResponseSources,
+  toFeedResponse,
+};

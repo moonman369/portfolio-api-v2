@@ -27,10 +27,11 @@ src/
     stats.js             # /github, /leetcode, /refresh
     documents.js         # ingestion routes
     chat.js              # /api/v1/moonmind/chat + the run feed (POST /runs, GET /runs/:runId)
+                         #   + the browser's mail report-back (POST /mail/:submissionId/result)
   stats/                 # github.js, leetcode.js — plain JS, framework-free
   documents/             # taxonomy.js, schema.js, embeddings.js, store.js — plain JS
   retrieval/             # embedder.js, plan.js, search.js, rank.js, index.js
-  integrations/          # websearch.js, calendar.js, email.js — plain JS
+  integrations/          # websearch.js, email.js — plain JS (no calendar integration: booking is a link)
   agent/
     index.js             # runTurn(), streamTurn(), startRun() — how HTTP runs the graph
     graph.js             # StateGraph wiring only
@@ -39,7 +40,7 @@ src/
     models.js            # getModel(role)
     prompts.js           # every system prompt
     tools.js             # every tool + TOOLSETS map
-    nodes/               # router.js, simple.js, stats.js, knowledge.js, agents.js, generate.js
+    nodes/               # router.js, simple.js, stats.js, knowledge.js, agents.js, action.js, generate.js
 public/                  # run-viewer.html — the only static asset (see below)
 scripts/                 # parity-check, evals, oauth, one-off migrations
 test/                    # node:test, mirrors src/
@@ -132,7 +133,7 @@ function buildGraph({ nodes, checkpointer }) {
     /* one addNode per route + 'generate' */
     .addEdge(START, 'router')
     .addConditionalEdges('router', routeFromState, ROUTE_TO_NODE)
-    /* each branch -> 'generate' */
+    /* each branch -> 'generate', except knowledge -> escalation? -> agent (once) */
     .addEdge('generate', END)
     .compile({ checkpointer });
 }
@@ -171,23 +172,45 @@ guard (non-LLM: length cap, rate limit, auth)  [existing http-layer checks, unch
 ```
 
 - `about_me` and `complex` merge into **`knowledge`** — the boundary between them was
-  never real. Trend and comparison questions about Ayan are answered from retrieval alone
-  until Phase 9 adds the escalation.
+  never real. Trend and comparison questions about Ayan are answered from retrieval;
+  the ones that need the market or "today" escalate to `agent` (Phase 9, below).
 - `tech_web` and `complex`'s tool use merge into **`agent`**: one `makeAgentNode` call,
   four tools (`resolve_time`, `metadata_filter`, `semantic_search`, `web_search`). Built
   in Phase 8. `resolve_time` is deterministic; the two document tools are thin wrappers
   over `retrieval/`'s existing arms, not copies of them. `TOOLSETS.agent` is the only
   entry in the map — `action` is deliberately not an agent, so nothing else can act.
-- `book_catchup` and `send_mail` merge into **`action`**, branching internally on
-  `slots.action`. Booking is a templated scheduling link from a hosted provider; mail is
-  deterministic. Neither is an agent — no calendar tool, no confirmation step.
+- `book_catchup` and `send_mail` merge into **`action`** (`nodes/action.js`, Phase 10),
+  branching internally on `slots.action`. Neither branch is an agent and neither has a tool.
+  - `book` is templated: the configured bookable windows (`MOONMIND_BOOKING_WINDOWS`,
+    stated verbatim) and the Calendly link (`MOONMIND_CALENDLY_URL`), with the router's
+    `slots.preference` reflected but never promised. No calendar access of any kind — it
+    cannot see availability or know a booking happened, and never claims to.
+  - `mail` is a deterministic multi-turn flow over `activeFlow: "action"`,
+    `slots.mailDraft` and `pendingConfirmation`: capture (one structured-output call,
+    draft stored verbatim) → address validation (syntax + MX, one re-entry) → confirm (the
+    stored draft echoed exactly, plus a `mailAction` confirm card) → on a clear "yes",
+    issue. Anything else at the confirm step cancels. **The send happens in the browser:**
+    Web3Forms' free plan refuses server-side calls, so issuing means composing the
+    byte-exact payload, recording it `pending` in `mail_events`, and returning it as
+    `mailAction: { type: "submit" }`; the frontend POSTs it and reports the outcome to
+    `POST /mail/:submissionId/result`.
 - `stats_and_docs` merges into **`stats`**, branching internally on
   `slots.withDocuments` — the same shape as `action`, decided at the Phase 7 gate. A pure
   numbers question skips retrieval; a mixed one composes both halves. The label is
   narrower than what the node does, which was the accepted cost of not keeping an eighth
   label.
-- Escalation: `knowledge` may hand off to `agent` **once per turn**, budget enforced in
-  state. No other node escalates; `agent` never escalates back.
+- Escalation (Phase 9): `knowledge` may hand off to `agent` **once per turn**.
+  `knowledge` only *asks* (`escalate`, with `escalationReason`), deterministically and with
+  no model call: when the pool's best semantic score is below
+  `MOONMIND_ESCALATION_MIN_TOP_SCORE` (`weak_retrieval`), or when the question asks for
+  current/market framing (`needs_current`, a phrase list plus `MOONMIND_ESCALATION_TERMS`).
+  The graph decides: `routeAfterKnowledge` allows the hop only while `escalations < 1`,
+  and an `escalation` node — owned by `graph.js`, not injectable — spends the budget and
+  appears in the run feed. The agent is handed `knowledge`'s documents (sanitized, in its
+  system prompt) and the same history every turn gets. No other node escalates; `agent`
+  never escalates back — its only edge is to `generate`. `stats` composes the knowledge
+  node but keeps only its documents, so a mixed question never escalates (accepted,
+  PROGRESS.md Decisions 2026-09-23).
 - **`greeting`** is templated alongside `refusal` and `capabilities` (added Phase 6.5).
   "Hey" is a greeting, not a request for the feature list — answering it with the
   capability menu was a live bug. `capabilities` stays for the explicit ask.
@@ -207,9 +230,13 @@ State fields (supersedes LLD §3): `sessionId`, `rawQuery`, `messages`, `route`,
 `routeConfidence`, `slots`, `documents`, `statsPayload`, `searchResults`, `summary`,
 **`finalAnswer`**, **`error`**, **`activeFlow`**, **`previousRoute`** (the route the last
 turn took — written by `generate`, outside the per-turn reset, so a refinement can inherit
-it), **`agentEscalationUsed`** (the `knowledge`→`agent` handoff budget, reset per turn).
-`pendingConfirmation` is dropped — `action`'s `book` branch returns a templated link with
-no confirmation step, and `mail` is deterministic.
+it), **`escalate`** / **`escalationReason`** / **`escalations`** (the `knowledge`→`agent`
+request, its reason, and the hop budget — all reset per turn; Phase 9 named the budget
+`escalations`, a count, where this doc had planned a boolean `agentEscalationUsed`).
+**`pendingConfirmation`** is set only while a mail draft awaits its "yes" (it carries the
+draft's fingerprint, so issuance can prove the confirmed draft is the one being sent), and
+**`mailAction`** (per-turn) is the confirm card or browser submission for the frontend —
+both Phase 10.
 
 ---
 
@@ -227,7 +254,8 @@ temperature 0, and each has a defined failure path:
 | intent | deterministic taxonomy fallback (the old repo's unprotected call is a bug — see `OLD_REPO_MAP.md` §10.36) |
 
 **Per-turn reset.** `runTurn` resets the per-turn fields in its invoke input —
-`route`, `documents`, `statsPayload`, `searchResults`, `finalAnswer`, `error`. Without
+`route`, `documents`, `statsPayload`, `searchResults`, `escalate`, `escalationReason`,
+`escalations`, `mailAction`, `finalAnswer`, `error`. Without
 this the checkpointer leaks the previous turn's documents and answer into this one.
 Persistent across turns: `messages`, `slots`, `pendingConfirmation`, `activeFlow`,
 `summary`.
@@ -238,7 +266,8 @@ lets flow continue to `generate` (which passes the answer through). **The API ne
 because a node threw.**
 
 **Retries live in exactly one layer:** the outbound call (Gemini, OpenAI, GitHub, LeetCode,
-search, calendar, email). No node-level retries stacked on top of client-level retries.
+search, the mail MX lookup). No node-level retries stacked on top of client-level retries.
+(Mail itself is not an outbound call of ours — the browser POSTs it.)
 
 **Everything is bounded.** A timeout on every outbound call; per-agent `maxSteps`; a graph
 `recursionLimit`; a per-run wall-clock cap; a max input message length; and history sent to
@@ -246,12 +275,21 @@ models capped at N turns, with `summary` populated only once history exceeds tha
 
 **Side effects only in tools, enforced in code — not by prompting.**
 
-- `action`'s `mail` branch sends deterministically and idempotently per session/intent —
-  no agent decides whether to send.
-- The email recipient comes from `config.js` and is **never a tool argument** — the
-  `send_email` tool schema has no recipient field, so no prompt injection can redirect it.
+- `action`'s `mail` branch issues a payload only on an explicit "yes" to the exact draft
+  shown, deterministically — no agent decides whether to send. The draft is captured once
+  and never regenerated, so the body sent is byte-identical to the body confirmed.
+- **The recipient is bound by the Web3Forms access key**, not by us: the key's registered
+  inbox is the only destination, and no request field can change it. Our payload never
+  carries a recipient field — `PAYLOAD_FIELDS` is the whole vocabulary, held by a test —
+  and the visitor's address is only `email`/`replyto`. (`MOONMIND_OWNER_EMAIL`, planned in
+  Phase 00, was never needed and does not exist.)
+- **What the browser send costs.** The backend cannot prove the bytes the browser POSTs
+  are the bytes it issued (the browser reports a SHA-256 and `mail_events` records whether
+  it matches — advisory); the caps are enforced where the backend issues a payload, not
+  where it is sent; and `sent`/`failed` in `mail_events` is whatever the browser reports.
+  Accepted at the Phase 10 gate over paying for server-side access.
 - `action`'s `book` branch has no calendar integration or tool at all — it returns a
-  templated, hosted scheduling link. There is no confirmation step to guard.
+  templated, hosted scheduling link. Nothing is written anywhere.
 - Tool isolation is by what `TOOLSETS` binds, never by asking a model not to use something.
 
 **Holding a conversation in place — one precedence order.** Two mechanisms can keep a turn
@@ -273,9 +311,18 @@ Phase 7 reconciled them, and this is the order:
 5. **The router's classification.**
 6. **`refusal`** — unknown and unmapped.
 
-**`activeFlow` is dormant.** Nothing sets it today, so step 3 never fires and the live
-order is 1, 2, 4, 5, 6. The field and its stickiness are kept because Phase 9's mail flow
-is the first thing that will set it; whether `book` needs it too is a Phase 9 decision.
+**`activeFlow` is live since Phase 10**, and only the mail flow sets it (`book` is one
+turn). Inside it, step 3 is enforced in the router, not left to the model:
+
+- A reply the flow is waiting for — a cancel at any point, a clear "yes" at the confirm
+  step, an email address while one is asked for — is recognised deterministically and
+  held in the flow **without a model call**. A bare "yes" classified cold is a greeting at
+  confidence 1.0, which would read as a confident topic change.
+- Anything else goes to the classifier. It stays in the flow unless it is a confident move
+  elsewhere (≥ `MOONMIND_TOPIC_CHANGE_CONFIDENCE`) or a request to `book` instead; a move
+  ends the flow **in the router**, clearing `activeFlow` and `pendingConfirmation`, so an
+  abandoned draft can never be sent by a later "yes".
+- Held turns carry `slots.mailDraft` forward, since `slots` is last-write-wins.
 
 **Testable offline.** `buildGraph` takes injected nodes and dependencies, so `test/agent/`
 exercises the whole graph with fake models and fake services — no network, no keys.

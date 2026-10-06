@@ -217,39 +217,78 @@ alongside `refusal`.
 **Done when:** the ten new single prompts and the two-turn pronoun conversation are in
 `scripts/router-eval.js` and pass; the existing eval and 6.5's fixture do not regress.
 
-### `[ ]` Phase 9 — `action` node (`book` | `mail`)
-**⛔ GATE first — questions for Ayan, recorded in Decisions and CLAUDE.md:** (1)
-scheduling-link provider (hosted, e.g. Calendly-style — no `check_free_busy`/`create_event`
-tool, no calendar integration); (2) email provider (HTTP API — Resend/SendGrid — over
-SMTP, recipient fixed via `MOONMIND_OWNER_EMAIL`, never a tool argument); (3) how a visitor
-is shown the link/confirmation; (4) whether either branch needs multi-turn `slots` state at
-all, given both are now deterministic and single-turn (ARCHITECTURE.md §5).
-**Scope:** `src/integrations/email.js` (plain JS, timeout); one `action` node, no agent,
-branching internally on `slots.action` (`'book'` | `'mail'`). `book` returns a templated
-scheduling link deterministically — no tool, no confirmation step. `mail` sends via
-`send_email` (**no recipient field** in its schema) deterministically. Replaces
-`book_catchup`/`send_mail` and the calendar/email tool-and-confirmation stack from the
-superseded Phase 6a/6b plan. Tight per-IP + sessionId rate limits for the action route.
-**Done when:** both branches covered by offline tests; `send_email`'s schema has no
-recipient; "send this to someone@else.com" still reaches only Ayan; the rate limit trips.
+*Numbering corrected 2026-09-23 (Ayan). This checklist had put the `action` node at
+Phase 9, which dropped the `knowledge` → `agent` escalation out of the plan entirely,
+though Phases 7 and 8 both handed it to Phase 9. The playbook numbering is: **9 =
+escalation hop, 10 = action node, 11 = cutover + final structure audit.** Nothing already
+completed was renumbered; handoff entries before this date that say "Phase 9's action" or
+"Phase 9's mail flow" mean Phase 10.*
 
-### `[ ]` Phase 10 — Structure audit + monitoring
+### `[x]` Phase 9 — Escalation hop (`knowledge` → `agent`, once per turn)
+*Done 2026-09-23. Gate settled with **two numbers**, not one — a 0.82 cut-off and a 0.84
+escalation trigger (Ayan's call; see Decisions). Evidence in `docs/evals/retrieval-floor.md`
+and `docs/evals/escalation.md`.*
+**Before the hop, in order:** (1) this numbering fix and two standing decisions (see
+Decisions, 2026-09-23); (2) close Phase 8's unmet exit condition — the agent's sources in
+the `/chat` response, committed separately as `phase-8: surface agent sources`; (3) set
+the retrieval gate (`MOONMIND_MIN_SEMANTIC_SCORE`, `k`) from the Phase 6 data.
+**⛔ GATE after (3):** the current per-arm score distribution and per-query document counts
+go to Ayan, who decides the floor, before the trigger is built.
+**Scope:** `escalations` in state, reset per turn. `knowledge` flags `escalate` when
+retrieval is weak against the gated floor, or when the question needs current / market /
+industry framing — deterministic and config-driven, no extra LLM call. Conditional edge
+`knowledge → agent | generate`, allowed only while `escalations < 1`, incremented on the
+hop. `agent` never escalates; no other node gains the edge. The hop is a step in the
+Phase 4 feed. The agent receives the documents `knowledge` already retrieved **and** the
+conversation history.
+**Done when:** the floor is set from data and recorded, and a narrow query no longer
+returns the whole corpus; an offline test proves the hop fires once and only once (a node
+that always reports weak results still terminates with `escalations === 1`); the Phase
+3b set and the Phase 7 "AI skills evolved" baseline never escalate; "AI projects + market
+relevance today" escalates and returns a web-grounded answer, before/after in
+`docs/evals/escalation.md`; a `stats` + `withDocuments` question does **not** escalate
+and a test says so; the recursion limit is never reached in any test.
+
+### `[x]` Phase 10 — `action` node (`book` | `mail`)
+*Done 2026-09-25, backend half. **Delivery to Ayan's inbox is verified from the frontend,
+not here:** Web3Forms refuses server-side calls on its free plan, so the browser sends —
+the implementation brief is FRONTEND_INTEGRATION.md §11, and its acceptance list is the
+remaining evidence. Gate settled in Decisions (browser send; config-only Calendly; confirm
+card, no edit turn).*
+**Scope:** `nodes/action.js`, one node, no agent, no tool. `book`: templated windows +
+Calendly link, the router's `preference` reflected, no model call beyond routing. `mail`:
+a deterministic flow over `activeFlow: "action"`, `slots.mailDraft`, `pendingConfirmation`
+— capture (one extraction call, draft stored verbatim) → validate (syntax + MX, one
+re-entry) → confirm (exact draft + a confirm-card `mailAction`) → on a clear "yes", issue
+the byte-exact Web3Forms payload for the browser and record it `pending` in `mail_events`.
+`integrations/email.js`: validation, payload builder (no recipient field), `mail_events`
+with per-session / per-IP / body caps. `POST /mail/:submissionId/result` for the browser's
+report. The router holds flow replies deterministically and ends the flow on a real topic
+change. Stubs removed.
+**Done when (backend):** book returns windows + link with no extra model call and no
+availability claim; the full, email-first, invalid-address, someone-else's-address and
+cancel flows behave, offline and live; the sent body is byte-identical to the confirmed
+one; the payload has no recipient field; caps trip; a failed issue is never issued and a
+reported failure lands as `failed`; CLAUDE.md and ARCHITECTURE.md no longer describe calendar
+writes, a config recipient or `MOONMIND_OWNER_EMAIL`.
+
+### `[ ]` Phase 11 — Cutover + final structure audit
+**Due BEFORE this phase starts, not at it:** Phase 0's CI/CD deploy and live parity run
+(see Phase 0 open items 1-5). Everything since Phase 0 was built against an unverified
+base; cutover is the wrong moment to find out the base was wrong.
 **Scope:** structure audit against ARCHITECTURE.md — layout, dependency direction,
 framework boundary, file sizes, grab-bag modules, unused deps; fix small drift, report
-anything larger and wait. Monitoring: per-run route, per-node latency, errors, tool-call
-counts, reusing `runs`/`steps`, plus a summary script or endpoint.
-**Done when:** the audit is clean or its exceptions are explicitly recorded; monitoring
-surfaces per-route/per-node stats from real run data.
-
-### `[ ]` Phase 11 — Cutover
-**Scope:** `docs/CUTOVER.md`: the exact frontend change (separate repo — instructions
-only), rollback plan, monitoring checklist, agreed zero-traffic period. Regression: run
-every eval script against production.
+anything larger and wait. `docs/CUTOVER.md`: the exact frontend change (separate repo —
+instructions only), rollback plan, monitoring checklist, agreed zero-traffic period.
+Regression: run every eval script against production. *Carried in from the old Phase 10,
+and not named by the playbook's one-line summary — confirm it stays:* per-run route,
+per-node latency, errors and tool-call counts from `runs`/`steps`, plus a summary script
+or endpoint.
 **⛔ GATE:** decommissioning the old MoonMind pipeline happens in the old repo only after
 Ayan confirms zero traffic for the agreed period. Don't touch that repo from here — write
 the steps into CUTOVER.md for a separate session.
-**Done when:** evals pass in production, CUTOVER.md is complete, and Ayan has switched the
-frontend.
+**Done when:** the audit is clean or its exceptions are explicitly recorded; evals pass in
+production, CUTOVER.md is complete, and Ayan has switched the frontend.
 
 ---
 
@@ -1076,7 +1115,8 @@ before the call that writes the answer, and 4 truncated those.
 1. **Phase 9 must close the routing gap.** Until the `knowledge` → `agent` escalation
    exists, the document tools are only reachable by calling the node directly.
    `docs/evals/agent.md` §2 is the baseline for what the escalation should produce.
-2. **`searchResults` is in `toTurn` but not in the HTTP response.** `/chat` returns
+2. ***Closed 2026-09-23 (`phase-8: surface agent sources`)** — `/chat` and the run feed
+   now carry a `sources` array; see the Phase 9 handoff.* **`searchResults` is in `toTurn` but not in the HTTP response.** `/chat` returns
    `documents` but not the agent's sources, so a frontend rendering an agent answer has
    its citations only as markdown inside the prose. Adding it is a response-shape change
    and belongs with Phase 11's cutover, next to `docs/FRONTEND_INTEGRATION.md`.
@@ -1143,6 +1183,209 @@ committed as a script — it would just become more examples to tune against.
 1. **"what can you do" is a near-duplicate** of the existing "What can you do?" in the
    capabilities set. Added anyway because the brief lists it; it costs one call.
 2. **Carried over:** everything in Phase 8's open items, unchanged.
+
+---
+
+### Phase 9 — Escalation hop — 2026-09-23
+
+**Shipped, in three commits.** `phase-9: correct progress numbering` (9 = escalation,
+10 = action, 11 = cutover + final audit; two standing decisions); `phase-8: surface agent
+sources` (Phase 8's unmet exit condition); and this one. 408 offline tests pass (29 new
+across the phase: 7 for sources, 22 for the hop and the floor). Live: `docs/evals/escalation.md` PASS.
+
+**Step 2 — agent sources.** `/chat` and the run feed carry a `sources` array: web results
+and document references, each entry with the same keys as a `documents` entry plus `kind`
+and `url`, repeats dropped. The run store keeps them next to `documents`. The agent, its
+prompt and its tools were not touched. `FRONTEND_INTEGRATION.md` §3 and the OpenAPI
+schema document it.
+
+**Step 3 — the floor, and why the A/B file could not set it.** `docs/evals/retrieval-ab.md`
+recorded ids, never scores. `scripts/retrieval-floor.js` (new, read-only) measured the
+semantic arm over 18 queries — the Phase 3b set, the Phase 7 baseline, the three Phase 8
+questions, two narrow and two nothing-should-match probes — and simulated both absolute
+and relative floors. Scores sit in a 0.76-0.90 band. Findings, all in
+`docs/evals/retrieval-floor.md`: the nothing-probes top out at 0.8276 and every real
+question starts at 0.8502, so a trigger at 0.84 separates them; the same 0.84 as a
+cut-off costs broad recall; relative floors fail because the "About Ayan" document tops 7
+of 18 queries; "underwater basket weaving" (0.8539) is inseparable by score. Ayan chose B:
+cut-off 0.82, trigger 0.84 (Decisions).
+
+**Step 4 — the hop.**
+- `knowledge` asks, deterministically and with no model call: `weak_retrieval` when
+  `retrieve()`'s new `topSemanticScore` (best of the whole pool, pre-gate) is under 0.84;
+  `needs_current` when the question matches a word-bounded phrase list (`market`, `the
+  industry`, `latest`, `today`, `nowadays`, `trends`, `state of the art`, …) plus
+  `MOONMIND_ESCALATION_TERMS`.
+- The graph decides: `routeAfterKnowledge` → `escalation` only while `escalations < 1`;
+  the `escalation` node spends the budget and edges to `agent`; `agent` edges only to
+  `generate`. `knowledge` is the only node with the edge.
+- The agent gets `knowledge`'s documents (sanitized, as a HANDOVER block in its system
+  prompt) and the same capped history every turn gets. A direct `agent` turn has no
+  documents, so no handover.
+- The feed shows it: `knowledge end … escalate=needs_current`, then `escalation`
+  start/end with `escalations=1`, then `agent`.
+
+**A defect the floor exposed, fixed.** With the gate above 0, `metadata_filter` returned
+nothing: its hits come from a Mongo filter and carry no semantic score, so the gate dropped
+every one. `runArm` now skips the floor when the semantic arm did not run. The existing
+tool test caught it — it runs on production defaults.
+
+**Verified.**
+- Offline (`test/agent/escalation.test.js`): a knowledge node that **always** asks still
+  terminates with `escalations === 1`, under a recursion limit of 6 (the escalated path is
+  5 supersteps); an agent that also asks goes nowhere; the edge refuses a second hop; a
+  throwing `knowledge` never hops; the budget resets per turn; **`stats` + `withDocuments`
+  does not escalate even when its composed retrieval asks — stated in the test as the
+  accepted limitation**; the 11 Phase 3b/Phase 7 questions at their measured scores never
+  escalate; the handover carries documents (sanitized) and history; the feed shows the step.
+- Live (`docs/evals/escalation.md`): "AI projects + market relevance today" → `knowledge`,
+  escalated (`needs_current`), 15 documents handed over, 5 web sources, a market section
+  citing two 2026 trend reports; every cited URL came from a tool or a handed-over
+  document. Before: the same projects list, with market relevance asserted from nothing.
+  The Phase 3b set and the Phase 7 baseline: **none escalated**, all on their usual route,
+  7-16 s — no extra model call on the ordinary path.
+
+**Files.** `src/agent/graph.js` (edge, hop node, budget), `state.js` (three per-turn
+fields), `nodes/knowledge.js` (trigger), `nodes/agents.js` (handover), `prompts.js`
+(`buildEscalationContext`), `runs.js` (feed summaries), `index.js` (`toTurn`), `tools.js`
+(ungated metadata arm), `src/retrieval/index.js` (`topSemanticScore`), `src/config.js`,
+`.env.example`, `docs/ARCHITECTURE.md` §4-5, `docs/FRONTEND_INTEGRATION.md` §4. New:
+`scripts/retrieval-floor.js`, `scripts/escalation-eval.js`,
+`docs/evals/retrieval-floor.md`, `docs/evals/escalation.md`,
+`test/agent/escalation.test.js`. Stale "Phase 9 = action" comments renumbered.
+
+**Env vars.** Two added, two defaults changed; total 85.
+`MOONMIND_ESCALATION_MIN_TOP_SCORE` (0.84; 0 turns the weak trigger off) and
+`MOONMIND_ESCALATION_TERMS` (appends to the phrase list — the second var is what makes the
+wording trigger config-driven, as the brief required). `MOONMIND_MIN_SEMANTIC_SCORE` 0 →
+0.82; `MOONMIND_FINAL_DOCUMENT_LIMIT` default 10 → 15 (the deployed `.env` already had 15).
+
+**Deviations.** Two, recorded below (49-50).
+
+**Open items.**
+1. **The agent still spends one document-tool call after a handover** (10 document-tool
+   sources in the live run), even after the handover was worded as an explicit override.
+   Documents and history are passed; gpt-4o-mini re-checks anyway. Enforcing it would
+   mean a per-turn toolset, which the one-`TOOLSETS`-map rule forbids. The lever is
+   `MOONMIND_AGENT_MODEL` (Phase 8 open item 3).
+2. **Weak-retrieval escalation bought nothing on the live nothing-probe.** "Has Ayan
+   published a cookbook?" escalated, handed over 0 documents (all under 0.82), the agent
+   found nothing, and answered as `knowledge` alone did — 4-5 s slower. The trigger works;
+   whether it earns its latency is Ayan's call. `MOONMIND_ESCALATION_MIN_TOP_SCORE=0` turns
+   it off without touching `needs_current`.
+3. **Known misses.** "Underwater basket weaving" does not trigger (0.854, name match).
+   "His latest project" does (`latest`) — slower, same answer.
+4. **The 0.82 gate changes what ordinary answers see:** TCS 15 → 10 documents,
+   certifications 9, education 5, hobbies 1, and metadata-only hits (0-5 per query) are
+   dropped. That is what was chosen, but answer quality was not re-judged here — run
+   `knowledge-eval` (carried since Phase 3b) against it.
+5. **An agent failure after a hop answers with the generic error copy**, not with the
+   documents `knowledge` already found. Falling back to `generate` with them would be a
+   small change to the error path; not done in a phase that already changes topology.
+6. **File sizes:** `graph.js` 322 and `agents.js` 259 lines are now over the ~250
+   guideline, joining `prompts.js` 557, `tools.js` 483, `index.js` 374, `runs.js` 305.
+   For the Phase 11 audit.
+7. **Carried over:** Phase 0's deploy and parity run (**due before Phase 11**), Phase 2's
+   `stats-eval`, Phase 3a's `retrieval-parity`, Phase 3b's `knowledge-eval`, Phase 4's two
+   live re-checks; Phase 8's `MOONMIND_AGENT_MODEL` question.
+
+---
+
+### Phase 10 — action node — 2026-09-25
+
+**Shipped.** `book` and `mail` in one node, neither an agent, neither with a tool. 442
+offline tests pass (34 new). Live: router eval 45/45 + 13/13 with the new `preference`
+field; `docs/evals/action.md` PASS on six scenarios. **What is not verified here is
+delivery** — the browser sends (below), so that evidence is the frontend's §11.9.
+
+**Step 1 changed the plan, and was raised before building.** Three contract checks:
+1. Web3Forms: `POST https://api.web3forms.com/submit`, `access_key` required; `email`,
+   `subject`, `replyto`, `redirect`, `botcheck` optional; `ccemail`/`attachment`/`webhook`
+   paid. 250 submissions/month free (third-party pricing pages — Web3Forms' own returned
+   403 to the fetch). **Server-side calls get `403` unless the plan is paid and the server
+   IP safelisted.** That contradicted "server-side POST from `integrations/email.js`".
+2. No request field sets the primary recipient; it is bound to the key. Holds.
+3. Calendly free plan: webhooks are paid, but the REST API is on every plan including
+   Free — the brief's "no API access" was wrong. Link-only stands, as a choice.
+Ayan chose the browser send; the gate's two questions were answered the same session
+(Decisions).
+
+**The mail flow, as built.** capture (one `intent`-model extraction, draft stored in
+`slots.mailDraft` verbatim; the visitor's own words if extraction fails) → address
+(syntax + MX; a destination like "send this to x@y" is never taken as the sender, and the
+visitor is told it can only go to Ayan) → confirm (stored draft echoed + `mailAction`
+confirm card; `pendingConfirmation` carries the draft's fingerprint) → "yes" (fingerprint
+re-checked, caps re-checked, `pending` row written **before** the payload is released —
+an issue that cannot be recorded is not issued). Anything but a clear yes at the confirm
+step cancels (`cancelled` row). The body sent is `draft.body` untouched; the visitor's
+address travels in `email`/`replyto`, not appended to the message, so the confirmed text
+is the sent text.
+
+**Flow vs. router.** Flow replies — a cancel, a clear yes, an address — are recognised
+deterministically and held without a model call (a bare "yes" classified cold is a
+greeting at 1.0, i.e. a "confident topic change"). Other text goes to the classifier; a
+confident move elsewhere, or "book instead", ends the flow in the router so no later "yes"
+can send the abandoned draft. Tested: each bare reply is handled exactly once, by `action`.
+
+**Found and fixed while verifying.**
+- **The raw client IP would have been persisted.** LangGraph copies primitive
+  `configurable` values into checkpoint metadata (`propagateConfigurableToMetadata`), so
+  `clientIp` in the run config would have landed in Mongo with the thread. It is hashed in
+  `buildInvocation` before it enters the config; only `ipHash` reaches the graph.
+- **MX lookups failed open on every address on this machine.** A scoped `dns.Resolver`
+  does not inherit `dns.setServers()`, so on a resolver that refuses queries (the reason
+  `MONGO_DNS_SERVERS` exists) every lookup errored `ECONNREFUSED` and — by design — passed
+  unverified, typo'd domains included. The MX resolver now uses `MONGO_DNS_SERVERS` too.
+  Live: gmail.com, moonman.in pass; gmial.cmo, gmial.con and example.com (null MX) fail.
+- **Drafts spoke about Ayan in the third person** ("I want to talk to Ayan about…" in a
+  message *to* Ayan). Extraction prompt now addresses him as "you".
+- **A Phase 9 PROGRESS edit had eaten the first line of a Decisions entry** ("Phase
+  numbering restored"); restored.
+
+**Files.** New: `src/agent/nodes/action.js`, `src/integrations/email.js`,
+`scripts/action-eval.js`, `docs/evals/action.md`, `test/agent/action.test.js`,
+`test/integrations/email.test.js`. Changed: `nodes/router.js` (`preference`, flow hold),
+`nodes/simple.js` (stub removed), `state.js` (`mailAction`), `prompts.js` (extraction
+prompt + action copy), `index.js` (action node, `ipHash`, `mail` in the turn,
+`reportMailResult`), `runs.js` (`mail` on the run), `http/chat.js` (`mail`, `req.ip`, the
+report route), `http/openapi.js`, `config.js`, `.env.example`, `CLAUDE.md` guardrails,
+`docs/ARCHITECTURE.md` §1/§4/§5, `docs/FRONTEND_INTEGRATION.md` (§2-§4, §9-§10, new §11).
+`MOONMIND_OWNER_EMAIL` never existed in code; it is now gone from the docs too.
+
+**Env vars.** Ten added, total 95: `MOONMIND_CALENDLY_URL`, `MOONMIND_BOOKING_WINDOWS`,
+`WEB3FORMS_ACCESS_KEY`, `WEB3FORMS_ENDPOINT`, `MOONMIND_MAIL_MAX_PER_SESSION` (3),
+`MOONMIND_MAIL_MAX_PER_IP` (5), `MOONMIND_MAIL_WINDOW_HOURS` (24),
+`MOONMIND_MAIL_MAX_BODY_CHARS` (2000), `MOONMIND_MAIL_DNS_TIMEOUT_MS` (3000),
+`MONGO_MAIL_EVENTS_COLLECTION` (`mail_events`). The first three are optional at boot;
+without them `book` / `mail` say they are unavailable.
+
+**Deviations.** Four, recorded below (51-54).
+
+**Open items.**
+1. **Set `MOONMIND_CALENDLY_URL`, `MOONMIND_BOOKING_WINDOWS` and `WEB3FORMS_ACCESS_KEY` on
+   the VM.** The live eval ran on labelled placeholders for all three.
+2. **Delivery is unverified until the frontend ships §11.** Its acceptance list (§11.9) is
+   the "full flow → Ayan's inbox" evidence this phase's brief asked for.
+3. **This machine cannot reach Atlas** (TLS alert 80 — typically the current IP missing
+   from the Atlas access list), so the live eval ran with `--memory`: routing, extraction
+   and MX live; checkpoints and `mail_events` in memory. `mail_events` persistence is
+   covered offline only. Re-run `node --env-file=.env scripts/action-eval.js` without the
+   flag once access is restored — it cleans up its own rows.
+4. **`mail_events` has no TTL.** It holds addresses and subjects (never bodies) and is an
+   audit log, so nothing expires it; decide a retention if that matters.
+5. **Transient DNS failures fail open** (`verified: false`), so a typo'd domain passes
+   while the resolver is down. The address is only ever a reply-to, so the cost is a
+   bounced reply, not misdelivery.
+6. **File sizes:** `action.js` 344 (new), `email.js` 267, `router.js` 282, `chat.js` 283
+   now join the over-250 list (`prompts.js` 679, `openapi.js` 556, `tools.js`, `index.js`,
+   `runs.js`, `graph.js`, `agents.js`). The obvious cut — `nodes/mail.js` out of
+   `action.js` — adds a file to the ARCHITECTURE layout, so it is for the Phase 11 audit.
+7. **A timing-based test is flaky under load:** `POST /runs answers 202 …` in
+   `test/http/runs.test.js` relies on a 50 ms timer; it failed once in four full runs
+   this phase (pre-existing, unchanged).
+8. **Carried over:** Phase 0's deploy and parity run (**due before Phase 11**), Phase 2's
+   `stats-eval`, Phase 3a's `retrieval-parity`, Phase 3b's `knowledge-eval` (now also
+   against the 0.82 floor), Phase 4's two live re-checks, Phase 8's `MOONMIND_AGENT_MODEL`.
 
 ---
 
@@ -1221,6 +1464,55 @@ committed as a script — it would just become more examples to tune against.
   before this, "never mind" could still be overridden by 6.5's inheritance on a
   low-confidence turn. `activeFlow` outranks inheritance because it means a node is
   waiting on an answer, not merely that the last turn went somewhere.
+
+- **2026-09-23 — Mixed stats+portfolio questions stay on `stats`** (Ayan, closing Phase 7
+  open item 2). **Accepted limitation:** a question routed to `stats` +
+  `slots.withDocuments` cannot reach Phase 9's escalation hop, because that edge runs from
+  `knowledge`. It only bites a three-part question — numbers **and** documents **and**
+  market framing — which is rare. Moving the mixed path to `knowledge` would grow that
+  node a stats branch: new behaviour, in a phase that already changes graph topology.
+  Revisit only if real traffic shows the gap.
+- **2026-09-23 — Phase 0's deploy and live parity run are due before Phase 11, not at
+  it** (Ayan). Phase 0 was ticked without them (2026-09-12) and every phase since has
+  been built on an unverified base. Recorded as an open item on Phase 11's checklist.
+- **2026-09-23 — Retrieval floor: two numbers, `MOONMIND_MIN_SEMANTIC_SCORE=0.82` and
+  `MOONMIND_ESCALATION_MIN_TOP_SCORE=0.84`** (Ayan, at the Phase 9 gate, from
+  `docs/evals/retrieval-floor.md`). The Phase 6 A/B recorded ids but no scores, so it could
+  not set a floor; the new measurement over 18 queries could. As a trigger 0.84 splits
+  cleanly — the nothing-should-match probes top out at 0.828, every real question starts
+  at 0.850. As a cut-off it would have cost broad recall (backend tech 7 of 11 relevant,
+  strongest-skills-and-projects 3), undoing the k=15 decision. So the cut-off is 0.82,
+  which trims every query's tail while keeping broad recall, and the escalation reads the
+  pool's top score against 0.84. **Accepted cost:** a narrow question ("Ayan's resume")
+  still returns 15 documents — only a floor of 0.84+ makes it a handful. Relative floors
+  (within X of the top score) were rejected by the same data: the "About Ayan" document is
+  the top hit for 7 of 18 queries and inflates the top score for anything naming him.
+  `config.js`'s k default also moved 10 → 15 to match the Phase 6 decision.
+- **2026-09-23 — Phase numbering restored** (Ayan): 9 = escalation hop, 10 = action
+  node, 11 = cutover + final structure audit. See the note above Phase 9's checklist.
+  *(This entry's first line was lost by an edit in the Phase 9 commit and restored in
+  Phase 10.)*
+- **2026-09-25 — Mail is sent from the browser** (Ayan, at the Phase 10 gate). Step 1's
+  contract check found Web3Forms answers a server-side call with `403: This method is not
+  allowed` unless the account is paid **and** the server IP safelisted by their support.
+  Of the three options — pay, send from the browser, or switch to a provider that allows
+  server-side sends (which brings a config recipient back) — Ayan chose the browser. The
+  backend still validates, shows the exact draft, and issues the byte-exact payload only
+  after an explicit yes; the frontend POSTs it and reports back. **Accepted costs:** the
+  backend cannot prove the bytes sent equal the bytes issued (the reported SHA-256 makes a
+  change visible, not impossible); caps bind at issuance, not at send; `sent`/`failed` is
+  whatever the browser reports.
+- **2026-09-25 — Calendly link and bookable windows are config-only** (Ayan):
+  `MOONMIND_CALENDLY_URL` + `MOONMIND_BOOKING_WINDOWS`, set on the VM, no values in the
+  repo. Until both are set, `book` says scheduling is unavailable. The windows text must
+  match what the Calendly event enforces — the bot repeats it verbatim. Also recorded:
+  Calendly's **free plan does have a REST API** (its developer FAQ: "any subscription plan,
+  including the Free plan"); only webhooks are paid. Link-only is therefore a design
+  choice, not a platform limit — polling could not tie a booking to a visitor anyway.
+- **2026-09-25 — Confirmation is confirm/cancel only, shown as a card** (Ayan). The
+  confirm turn carries `mailAction: { type: "confirm", display: "confirm_card", … }` so the
+  frontend renders a card whose buttons send "yes"/"no" as ordinary messages. No edit
+  turn: anything but a clear yes cancels, and the draft is never re-extracted.
 
 ---
 
@@ -1950,6 +2242,62 @@ violates CLAUDE.md's standing "no dotenv" rule and does nothing — it reports
 `package.json` either, so it resolves only via a transitive install and would break on a
 clean `npm ci`. One line to delete; left alone because it is outside what was asked.
 
+### Out-of-band fix: `/refresh` failed with GitHub 502 — 2026-10-01
+
+**Symptom.** `refresh.failed { code: 'GITHUB_REQUEST_FAILED', message: 'GitHub GraphQL
+request failed with status 502' }` on every `/api/v1/refresh`.
+
+**Cause — reproduced, not guessed.** Not an outage: GitHub runs a GraphQL query against a
+~10s execution budget and answers an overrun with a bare nginx 502. The repositories query
+asked for 100 repos per page, each with `history.totalCount` on its default branch — cost
+that grows with repos *and* commits. The account now has 113 repositories. Measured live:
+`first: 100` → 502 at 11.1-11.6s, twice; `first: 50` → 200 in 9.1s (at the edge);
+`first: 25` → 200 in 4.4s. The 100 was carried over from the old service, which worked
+until the account outgrew it. The cached document was stale as a result: 100 repos / 2,166
+commits, against a live 113 / 2,362.
+
+**Fix** (`src/stats/github.js`). Page size 25, passed as a query variable; the selection
+set is unchanged, so the numbers mean what they always did. On a 502/503/504 the **same
+cursor** is retried at half the size (25 → 12 → 6 → 5), and the smaller size is kept for
+the remaining pages; at the floor it fails as before. Any other status is not retried.
+Retries live in this outbound layer only, per CLAUDE.md.
+
+**Verified.** 446 offline tests pass (4 new: page size 25; a 502 retries the same cursor
+smaller and completes; a persistent 502 stops after four bounded tries; a 401 is not
+retried). Live dry run against GitHub, with the write captured rather than persisted:
+113 repos, 2,362 commits, 214 PRs, 217 stars, in 21s over 5 pages.
+
+**Open.** A refresh now takes ~21s for this account. That is inside every timeout on the
+path (`GITHUB_TIMEOUT_MS` is per request; Nginx's default `proxy_read_timeout` is 60s), but
+it grows with the repo count — at roughly 4s per 25 repos, 60s is reached around 350
+repositories. Phase 11's cutover checklist should note it.
+
+**Corrected the same day — `repos` is the profile's own count: public, owned, forks
+included** (Ayan: "any visitor can find 124 repos on my github page"). The filter below
+had `isFork: false`, which dropped 18 public forks; the profile's Repositories tab counts
+them. The query is now `repositories(ownerAffiliations: [OWNER], privacy: PUBLIC)`, and
+verified live: 124, equal to GitHub's unauthenticated `public_repos` (124 = 106 originals
++ 18 forks). `/refresh` → 124 / 217 stars / 219 pulls / 2416 commits; `/github` the same.
+Stars, pulls and commits are untouched — they still come from the paginated query's scope
+(non-fork; owner, collaborator and organisation repos). The entry below is kept as it was
+first written.
+
+**Follow-up 2026-10-06 — `repos` now means public, owned, non-fork** (Ayan). The
+paginated query counts collaborator and organisation repos and private ones too (113);
+`repos` should be what a visitor sees on the profile. A separate one-field query —
+`repositories(ownerAffiliations: [OWNER], privacy: PUBLIC, isFork: false) { totalCount }`,
+no pagination — now sets `totalRepos`; stars, pulls and commits still come from the
+paginated query, unchanged. If the count query fails, it logs
+`github.repo_count_fallback` and falls back to the paginated count, so a refresh never
+fails because of it. Document and response shapes unchanged. Asked for in the old repo's
+`refresh_worker.js` / `src/swagger.js`; made here instead (Ayan's call — that repo is
+read-only), in `src/stats/github.js` and `src/http/openapi.js`. Verified live on a fresh
+local instance: `/refresh` → 200 in 16s, `totalRepos` 106, stars 217, pulls 219, commits
+2416; `/github` returns the same four. 449 offline tests pass (3 new). **That refresh
+wrote the stats document in the Mongo database `.env` points at** — if the old production
+API reads the same document, it now serves 106 too, until its own refresh overwrites it
+with its own count.
+
 ## Phase 6 deviations from LLD
 
 41. **The 8-route taxonomy (LLD §2, ARCHITECTURE.md's old §4) is superseded by a 6-label
@@ -2054,3 +2402,43 @@ clean `npm ci`. One line to delete; left alone because it is outside what was as
     and a UUID in a visitor-facing answer is exactly that. Titles are what a visitor can
     recognise and follow up on; the ids stay in the tool artifact, so the node and the run
     feed still have them. Same information, different audience.
+
+## Phase 9 deviations from LLD
+
+49. **Two floors, not one.** The LLD's escalation fires on weak retrieval against "the"
+    retrieval threshold, and the Phase 9 brief said the same. Measured, one number cannot do
+    both jobs: the value that separates "retrieval had nothing" (0.84) cuts broad-question
+    recall when used as the document cut-off. So `MOONMIND_MIN_SEMANTIC_SCORE` (0.82) gates
+    documents and `MOONMIND_ESCALATION_MIN_TOP_SCORE` (0.84) triggers the hop, read against
+    the pool's best score before the gate. Ayan's call at the gate.
+50. **The budget is a count spent by a graph-owned node.** ARCHITECTURE.md had planned a
+    boolean `agentEscalationUsed`; the brief asked for `escalations: 0`. `knowledge` only
+    sets `escalate` + `escalationReason`; `routeAfterKnowledge` allows the hop while
+    `escalations < 1`, and an `escalation` node in `graph.js` — not injectable, so no fake
+    or buggy node can bypass it — increments it. It is a node rather than edge logic because
+    edges cannot write state, and it is named `escalation`, not `escalate`, because LangGraph
+    forbids a node sharing a name with a state channel. The handover reaches the agent in
+    its **system prompt** via `runtime.context`, not as a message, so the conversation it
+    sees is exactly the visitor's.
+
+## Phase 10 deviations from LLD
+
+51. **The mail send happens in the browser.** The LLD's `send_mail` sends server-side
+    through a `send_email` tool behind a confirmation. Web3Forms' free plan refuses
+    server-side calls (Decisions, 2026-09-25), so the backend's last act is issuing the
+    byte-exact payload after the yes; the frontend POSTs it and reports back to
+    `POST /mail/:submissionId/result`. There is no `send_email` tool at all — `action` has
+    no tools — and no config recipient: the Web3Forms key binds it.
+52. **`activeFlow` is `"action"`, not `"mail"`.** The brief named the flow `'mail'`, but
+    `routeFromState` dispatches `activeFlow` by node name, and the node is `action`; the
+    mail half is `slots.action === "mail"`. A `"mail"` value would have needed a second
+    flow-to-node map for one flow.
+53. **The first unreachable address keeps the flow open for one re-entry.** The brief said
+    both "decline and end the flow (clear everything)" and "invite them to re-enter it —
+    allow one re-entry, then stop"; a re-entry into a cleared flow would be routed as a
+    fresh message and lost. So the first failure keeps the draft and asks again, and the
+    second ends the flow and clears everything. Nothing is ever sent in either case.
+54. **The router now writes `activeFlow` and `pendingConfirmation`** — only when it ends
+    the mail flow on a real topic change. Before Phase 10 it wrote route and slots only.
+    Leaving the flow anywhere else (e.g. in `generate`) would have let an abandoned draft
+    survive into the next turn, where a bare "yes" would send it.

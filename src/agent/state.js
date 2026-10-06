@@ -127,14 +127,29 @@ const State = Annotation.Root({
   // `MOONMIND_RETRIEVAL_DEBUG` is on. See ARCHITECTURE.md and retrieval/index.js.
   retrievalDebug: lastValue(null),
 
+  // The mail flow (Phase 10). `activeFlow: "action"` holds the conversation in the
+  // action node across capture -> validate -> confirm; the draft lives in
+  // `slots.mailDraft`; `pendingConfirmation` is set only while a "yes" would send.
   pendingConfirmation: lastValue(null),
   activeFlow: lastValue(null),
+  // What the frontend must act on this turn, if anything: `{ type: "confirm", ... }` to
+  // show a confirm card, or `{ type: "submit", ... }` — the exact Web3Forms request for
+  // the browser to POST. Per-turn: an old card or payload must never be shown twice.
+  mailAction: lastValue(null),
   summary: lastValue(null),
   // The route the PREVIOUS turn took. Written by `generate` (the one node every branch
   // converges on) and deliberately absent from PER_TURN_RESET, so the router can read it
   // after `route` itself has been cleared for this turn. It is what lets a refinement
   // like "no, just the link" inherit the route of the exchange it is refining.
   previousRoute: lastValue(null),
+
+  // The knowledge -> agent escalation (Phase 9). `escalate` is knowledge's request for
+  // the hop and `escalationReason` says why, for the feed; `escalations` is the budget,
+  // counted by the hop itself in graph.js, never by the node asking for it. All three
+  // are per-turn: the budget is one hop per TURN, not per session.
+  escalate: lastValue(false),
+  escalationReason: lastValue(null),
+  escalations: lastValue(0),
 
   finalAnswer: lastValue(null),
   error: lastValue(null),
@@ -153,6 +168,10 @@ const PER_TURN_RESET = Object.freeze({
   statsPayload: null,
   searchResults: [],
   retrievalDebug: null,
+  escalate: false,
+  escalationReason: null,
+  escalations: 0,
+  mailAction: null,
   finalAnswer: null,
   error: null,
 });

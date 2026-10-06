@@ -80,7 +80,8 @@ function buildComponents(maxMessageChars) {
         ...object({
           _id: str("github_stats"),
           stats: object({
-            repos: int(106),
+            // public, owned repos, forks included (the GitHub profile's count)
+            repos: int(124),
             commits: int(1854),
             pulls: int(45),
             stars: int(238),
@@ -109,7 +110,8 @@ function buildComponents(maxMessageChars) {
         status: str("success"),
         message: str("Refresh success"),
         elapsed: int(8123),
-        totalRepos: int(106),
+        // public, owned repos, forks included (the GitHub profile's count)
+        totalRepos: int(124),
         totalCommits: int(1854),
         totalStars: int(238),
         totalPulls: int(45),
@@ -118,6 +120,34 @@ function buildComponents(maxMessageChars) {
       // Generated from the zod schema the ingestion routes validate against.
       DocumentPayload: fromZod(documentSchema),
       ChatRequest: fromZod(buildBodySchema(maxMessageChars)),
+
+      AgentSources: {
+        type: "array",
+        description:
+          "The agent's citations — web results and portfolio documents it looked up. Each entry has the same keys as a `documents` entry, so the same renderer works, plus `kind` (`web` | `document`) and `url`. A web result's link is also in `metadata.external_links.source`. Repeats are dropped. Empty for routes that do not run the agent, and until a run finishes.",
+        items: { type: "object", additionalProperties: true },
+      },
+
+      MailAction: {
+        type: "object",
+        nullable: true,
+        description:
+          "Phase 10 mail flow. Null on every turn but two. `type: \"confirm\"` — show a confirm card with `to`, `from`, `subject` and `body` exactly as given, and send `replies.confirm` or `replies.cancel` as the next chat message. `type: \"submit\"` — POST `body` (a JSON string, byte for byte) to `endpoint` with `headers`, from the browser, then report the outcome to `POST /api/v1/moonmind/mail/{submissionId}/result`. The payload never carries a recipient: Web3Forms delivers to the inbox bound to the access key.",
+        additionalProperties: true,
+      },
+
+      MailResult: object(
+        {
+          status: { type: "string", enum: ["sent", "failed"] },
+          digest: {
+            type: "string",
+            pattern: "^[a-f0-9]{64}$",
+            description: "SHA-256 (hex) of the exact bytes POSTed to Web3Forms.",
+          },
+          providerMessage: { type: "string", maxLength: 300, description: "Web3Forms' message, on failure." },
+        },
+        ["status"],
+      ),
 
       ChatResponse: object({
         status: str("success"),
@@ -136,6 +166,8 @@ function buildComponents(maxMessageChars) {
               "Documents that grounded the answer. Empty for routes that do not retrieve. `summary_for_embedding` is stripped — it is keyword soup for the embedder, not prose.",
             items: { type: "object", additionalProperties: true },
           },
+          sources: ref("AgentSources"),
+          mail: ref("MailAction"),
         }),
       }),
 
@@ -182,6 +214,8 @@ function buildComponents(maxMessageChars) {
           },
           documentIds: { type: "array", items: str(), description: "Their ids, for convenience." },
           documentCount: int(8),
+          sources: ref("AgentSources"),
+          mail: ref("MailAction"),
           startedAt: str(),
           finishedAt: { type: "string", nullable: true },
           steps: { type: "array", items: ref("RunStep") },
@@ -338,6 +372,27 @@ function buildPaths() {
           400: errorResponse("runId is not a UUID, or since is not a non-negative integer"),
           ...unauthorized,
           404: errorResponse("No run with that id (it may have passed its retention window)"),
+        },
+      },
+    },
+
+    "/api/v1/moonmind/mail/{submissionId}/result": {
+      post: {
+        tags: ["MoonMind"],
+        summary: "Report a browser mail submission's outcome",
+        description:
+          "The browser POSTs the `mail.type: submit` payload to Web3Forms itself (the free plan refuses server-side calls), then reports what happened here. Only a pending submission moves, and only once.",
+        security: secured,
+        parameters: [
+          { name: "submissionId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+        ],
+        requestBody: { required: true, ...json(ref("MailResult")) },
+        responses: {
+          200: { description: "Recorded" },
+          400: errorResponse("submissionId is not a UUID, or the body is invalid"),
+          ...unauthorized,
+          404: errorResponse("No mail with that id"),
+          409: errorResponse("That mail's outcome was already reported"),
         },
       },
     },

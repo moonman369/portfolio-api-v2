@@ -20,11 +20,9 @@ const { createKnowledgeNode } = require("./nodes/knowledge");
 const { makeAgentNode } = require("./nodes/agents");
 const { TOOLSETS } = require("./tools");
 const { AGENT_SYSTEM_PROMPT } = require("./prompts");
-const { refusal, listCapabilities, greeting, makeStubNode } = require("./nodes/simple");
-
-// Routes whose real implementation lands in a later phase: `action` in Phase 9
-// (book | mail).
-const STUBBED_ROUTES = Object.freeze(["action"]);
+const { refusal, listCapabilities, greeting } = require("./nodes/simple");
+const { createActionNode } = require("./nodes/action");
+const email = require("../integrations/email");
 
 /** The production node set. Tests build their own and pass it straight to buildGraph. */
 function createNodes() {
@@ -36,9 +34,9 @@ function createNodes() {
     greeting,
   };
 
-  STUBBED_ROUTES.forEach((route) => {
-    nodes[route] = makeStubNode(route);
-  });
+  // Phase 10: book is a templated link; mail is a confirmed, deterministic flow whose
+  // send happens in the browser. Neither is an agent, and neither has a tool.
+  nodes.action = createActionNode();
 
   // The one agent. `TOOLSETS.agent` is the whole of what it can do — there is no second
   // place to look, and no prompt that widens it.
@@ -91,7 +89,7 @@ async function getCompiledGraph() {
  * The input and config for one turn. Shared so `runTurn` and `streamTurn` cannot drift
  * on the thread key, the per-turn reset, the recursion limit or the wall-clock cap.
  */
-function buildInvocation({ sessionId, message, runId }) {
+function buildInvocation({ sessionId, message, runId, clientIp = null }) {
   const { moonmind } = getConfig();
 
   return {
@@ -104,7 +102,10 @@ function buildInvocation({ sessionId, message, runId }) {
       messages: [new HumanMessage(message)],
     },
     config: {
-      configurable: { thread_id: sessionId, runId },
+      // The visitor's IP, for the mail caps — hashed HERE, before it enters the run config:
+      // LangGraph copies primitive `configurable` values into checkpoint metadata, so a
+      // raw address put here would be persisted with the conversation.
+      configurable: { thread_id: sessionId, runId, ipHash: email.hashIp(clientIp) },
       recursionLimit: moonmind.recursionLimit,
       // Wall-clock cap for the whole run, enforced by every runnable underneath.
       signal: AbortSignal.timeout(moonmind.runTimeoutMs),
@@ -128,6 +129,13 @@ function toTurn({ sessionId, runId, state }) {
     // found every caller reporting zero.
     searchResults: result.searchResults ?? [],
     statsPayload: result.statsPayload ?? null,
+    // Whether this turn hopped knowledge -> agent (Phase 9), and why. For evals, logs and
+    // the run feed's final step; not part of the HTTP response.
+    escalations: result.escalations ?? 0,
+    // What the frontend must act on (Phase 10): a mail confirm card, or the exact
+    // Web3Forms request to POST. Null on every other turn.
+    mail: result.mailAction ?? null,
+    escalationReason: result.escalationReason ?? null,
     retrievalDebug: result.retrievalDebug ?? null,
     error: result.error ?? null,
   };
@@ -139,12 +147,12 @@ function toTurn({ sessionId, runId, state }) {
  * @param {{ sessionId: string, message: string }} turn
  * @param {{ graph?: object }} [deps] Injected compiled graph, for tests and evals.
  * @returns {Promise<{sessionId, runId, route, routeConfidence, answer, documents,
- *   searchResults, statsPayload, retrievalDebug, error}>}
+ *   searchResults, statsPayload, escalations, escalationReason, retrievalDebug, error}>}
  */
-async function runTurn({ sessionId, message }, deps = {}) {
+async function runTurn({ sessionId, message, clientIp }, deps = {}) {
   const graph = deps.graph ?? (await getCompiledGraph());
   const runId = crypto.randomUUID();
-  const { input, config } = buildInvocation({ sessionId, message, runId });
+  const { input, config } = buildInvocation({ sessionId, message, runId, clientIp });
   const startedAt = Date.now();
 
   debug("agent.run.start", { runId, sessionId, via: "chat", question: message });
@@ -230,9 +238,9 @@ function owningNode(event) {
  * vocabulary has a single `tool` type, and a tool that never returns is already visible
  * as the missing `end` on the node holding it.
  */
-async function* streamTurn({ sessionId, message, runId }, deps = {}) {
+async function* streamTurn({ sessionId, message, runId, clientIp }, deps = {}) {
   const graph = deps.graph ?? (await getCompiledGraph());
-  const { input, config } = buildInvocation({ sessionId, message, runId });
+  const { input, config } = buildInvocation({ sessionId, message, runId, clientIp });
 
   const startedAt = Date.now();
   debug("agent.run.start", { runId, sessionId, via: "runs", question: message });
@@ -315,9 +323,9 @@ async function* streamTurn({ sessionId, message, runId }, deps = {}) {
 }
 
 /** Drain `streamTurn` into the store. Resolves with the turn, or null; never rejects. */
-async function driveRun({ sessionId, message, runId }, deps) {
+async function driveRun({ sessionId, message, runId, clientIp }, deps) {
   const { store } = deps;
-  const iterator = streamTurn({ sessionId, message, runId }, deps);
+  const iterator = streamTurn({ sessionId, message, runId, clientIp }, deps);
 
   try {
     let next = await iterator.next();
@@ -349,22 +357,30 @@ async function driveRun({ sessionId, message, runId }, deps) {
  * never a 404. `completed` is for tests and evals that want to wait; the HTTP handler
  * ignores it, which is the entire point of the feed.
  */
-async function startRun({ sessionId, message }, deps = {}) {
+async function startRun({ sessionId, message, clientIp }, deps = {}) {
   const store = deps.store ?? runs;
   const runId = crypto.randomUUID();
   const withStore = { ...deps, store };
 
   await store.startRun({ runId, sessionId, question: message }, withStore);
 
-  return { runId, sessionId, completed: driveRun({ sessionId, message, runId }, withStore) };
+  return { runId, sessionId, completed: driveRun({ sessionId, message, runId, clientIp }, withStore) };
+}
+
+/**
+ * The browser's report after it POSTed a mail payload to Web3Forms (Phase 10). The only
+ * way `mail_events` learns whether a message was delivered — the backend never sends.
+ */
+async function reportMailResult({ submissionId, status, digest, providerMessage }, deps = {}) {
+  return (deps.store ?? email).finalizeMailEvent({ submissionId, status, digest, providerMessage });
 }
 
 module.exports = {
   runTurn,
+  reportMailResult,
   streamTurn,
   startRun,
   createNodes,
   getCompiledGraph,
-  STUBBED_ROUTES,
   ROUTES,
 };

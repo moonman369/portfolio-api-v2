@@ -193,6 +193,33 @@ test("finishRun records the answer and the documents that grounded it", async ()
   assert.ok(run.finishedAt instanceof Date);
 });
 
+test("finishRun records the mail action a turn produced, and null when there is none", async () => {
+  const deps = store();
+  await runs.startRun({ runId: "r1", sessionId: "s1", question: "q" }, deps);
+  assert.equal((await runs.getRun("r1", deps)).mail, null, "null while running");
+
+  const mail = { type: "submit", submissionId: "m1", body: "{}", digest: "d" };
+  await runs.finishRun({ runId: "r1", turn: { route: "action", answer: "Sending…", documents: [], mail } }, deps);
+  assert.deepEqual((await runs.getRun("r1", deps)).mail, mail);
+});
+
+test("finishRun records the agent's sources, and an empty list when there are none", async () => {
+  const deps = store();
+  await runs.startRun({ runId: "r1", sessionId: "s1", question: "q" }, deps);
+  assert.deepEqual((await runs.getRun("r1", deps)).sources, [], "empty while running");
+
+  const searchResults = [{ title: "t", url: "https://example.com" }, { id: "d", title: "D", kind: "document" }];
+  await runs.finishRun(
+    { runId: "r1", turn: { route: "agent", answer: "a", documents: [], searchResults, error: null } },
+    deps,
+  );
+  assert.deepEqual((await runs.getRun("r1", deps)).sources, searchResults);
+
+  await runs.startRun({ runId: "r2", sessionId: "s1", question: "q" }, deps);
+  await runs.finishRun({ runId: "r2", turn: { route: "greeting", answer: "hi", documents: [] } }, deps);
+  assert.deepEqual((await runs.getRun("r2", deps)).sources, []);
+});
+
 test("a turn carrying an error finishes as failed but keeps its graceful answer", async () => {
   const deps = store();
   await runs.startRun({ runId: "r1", sessionId: "s1", question: "q" }, deps);

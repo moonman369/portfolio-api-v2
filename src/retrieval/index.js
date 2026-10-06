@@ -97,7 +97,8 @@ function buildDebugTrace({ perSubquery, unioned, ranked, documents }) {
  * @param {boolean} [options.debug] Include a per-stage trace (ids/titles only) under
  *   `debug` in the result — per-arm hits, the RRF-fused order, the post-ranker order and
  *   the post-rerank order. Off by default; costs one extra sort over data already fetched.
- * @returns {Promise<{documents, sanitized, subqueries, plans, arms, failedArms, debug?}>}
+ * @returns {Promise<{documents, sanitized, topSemanticScore, subqueries, plans, arms,
+ *   failedArms, debug?}>}
  */
 async function retrieve(query, options = {}) {
   const config = options.config ?? getConfig();
@@ -157,6 +158,14 @@ async function retrieve(query, options = {}) {
   const result = {
     documents,
     sanitized: sanitizeForPrompt(documents),
+    // The best semantic match in the whole candidate pool — how strongly the corpus
+    // answered at all. Taken before the gate and the reranker, so it measures the
+    // question, not what ranking later chose to keep. 0 when nothing matched. This is the
+    // weak-retrieval signal Phase 9's escalation reads (docs/evals/retrieval-floor.md).
+    topSemanticScore: unioned.reduce(
+      (best, document) => Math.max(best, Number(document.semantic_score) || 0),
+      0,
+    ),
     subqueries,
     plans: perSubquery.map((entry) => entry.plan),
     arms: perSubquery.flatMap((entry) => entry.arms ?? []),

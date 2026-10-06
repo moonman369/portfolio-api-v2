@@ -40,10 +40,18 @@ Lean by default: native `fetch` + `AbortSignal.timeout` (no axios), `node --env-
 
 - **Tool isolation is by `TOOLSETS` binding, never by prompting.** What an agent can do is
   what was passed to it.
-- **The email recipient is fixed by config** and is never a tool argument — `send_email`
-  has no recipient field in its schema.
-- **The `action` node has no calendar tool and no agent.** `book` returns a templated,
-  hosted scheduling link; `mail` sends deterministically. Both branch inside one node.
+- **The email recipient is bound by the Web3Forms access key** — the inbox registered to
+  that key is the only destination, and no payload field can change it. Our payload never
+  carries a recipient field (`PAYLOAD_FIELDS` in `integrations/email.js`, held by a test).
+  The visitor's address is only ever `replyto`.
+- **Mail is sent from the browser, not the backend.** Web3Forms' free plan refuses
+  server-side calls. The backend validates the address, shows the exact draft for a
+  confirm, and hands the frontend the byte-exact payload only after an explicit "yes".
+- **Scheduling is a link, with no calendar write at all.** `book` states the configured
+  windows and returns the Calendly URL; it cannot see availability or know a booking
+  happened, and never claims to.
+- **The `action` node has no tool and is not an agent.** `book` and `mail` branch inside
+  one node; the mail flow is a deterministic state machine with one extraction call.
 - Every outbound call has a timeout; retries live only in that outbound layer.
 - Every node is wrapped by the error boundary — the API never 500s because a node threw.
 
