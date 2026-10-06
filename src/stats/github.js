@@ -12,14 +12,26 @@ const { statsCollection } = require("../db");
 
 const GITHUB_GRAPHQL_ENDPOINT = "https://api.github.com/graphql";
 const GITHUB_REST_ENDPOINT = "https://api.github.com";
-const PAGE_SIZE = 100;
+// Repositories per page, and why it is not 100. GitHub runs each GraphQL query against a
+// ~10s execution budget and answers an overrun with a bare **502** (an nginx HTML page, not
+// a GraphQL error). The expensive field is `history.totalCount` on every repository's
+// default branch, so the cost grows with repos AND commits. Measured 2026-10-01 against
+// 113 repositories: first=100 → 502 at ~11s, twice; 50 → 200 in 9.1s (at the edge);
+// 25 → 200 in 4.4s. The old service's 100 worked until the account outgrew it.
+const PAGE_SIZE = 25;
+// If a page still overruns, the SAME cursor is retried at half the size, down to this
+// floor — at most three retries per page, so a real outage still fails fast-ish.
+const MIN_PAGE_SIZE = 5;
+// Gateway answers: the query (or GitHub) ran out of time, not a bad request.
+const RETRYABLE_STATUSES = new Set([502, 503, 504]);
 
-// Kept identical to the old service's query: same selection set means the same numbers.
+// The old service's selection set, unchanged — same fields means the same numbers. Only
+// the page size is now a variable instead of a hardcoded 100.
 const REPOSITORIES_QUERY = `
-  query ($username: String!, $afterCursor: String) {
+  query ($username: String!, $afterCursor: String, $pageSize: Int!) {
     user(login: $username) {
       repositories(
-        first: ${PAGE_SIZE}
+        first: $pageSize
         after: $afterCursor
         ownerAffiliations: [OWNER, COLLABORATOR, ORGANIZATION_MEMBER]
         isFork: false
@@ -49,6 +61,22 @@ const REPOSITORIES_QUERY = `
             }
           }
         }
+      }
+    }
+  }
+`;
+
+// The repo count, asked for separately: every public repository the user owns, forks
+// INCLUDED — the number on the profile's Repositories tab, and GitHub's own `public_repos`
+// for an unauthenticated visitor. Verified 2026-10-06: 124 here, 124 `public_repos`
+// (106 originals + 18 forks). The paginated query still feeds stars, pulls and commits
+// from its own scope; only `totalRepos` comes from here. One field, no pagination:
+// `totalCount` is computed by GitHub, so this is cheap.
+const OWNED_PUBLIC_REPOS_QUERY = `
+  query ($username: String!) {
+    user(login: $username) {
+      repositories(ownerAffiliations: [OWNER], privacy: PUBLIC) {
+        totalCount
       }
     }
   }
@@ -87,22 +115,24 @@ async function readGithubStats(options = {}) {
   return collection.findOne({ _id: docId });
 }
 
-async function fetchRepositoryPage({ username, afterCursor, token, timeoutMs, fetchImpl }) {
+async function fetchRepositoryPage({ username, afterCursor, pageSize, token, timeoutMs, fetchImpl }) {
   const response = await fetchImpl(GITHUB_GRAPHQL_ENDPOINT, {
     method: "POST",
     headers: { ...authHeaders(token), "Content-Type": "application/json" },
     body: JSON.stringify({
       query: REPOSITORIES_QUERY,
-      variables: { username, afterCursor },
+      variables: { username, afterCursor, pageSize },
     }),
     signal: AbortSignal.timeout(timeoutMs),
   });
 
   if (!response.ok) {
-    throw failure(
+    const error = failure(
       "GITHUB_REQUEST_FAILED",
-      `GitHub GraphQL request failed with status ${response.status}`,
+      `GitHub GraphQL request failed with status ${response.status} (page size ${pageSize})`,
     );
+    error.retryable = RETRYABLE_STATUSES.has(response.status);
+    throw error;
   }
 
   const payload = await response.json();
@@ -120,6 +150,31 @@ async function fetchRepositoryPage({ username, afterCursor, token, timeoutMs, fe
   }
 
   return repositories;
+}
+
+/** The number of public repositories the user owns, forks included. Throws on any failure. */
+async function fetchOwnedPublicRepoCount({ username, token, timeoutMs, fetchImpl }) {
+  const response = await fetchImpl(GITHUB_GRAPHQL_ENDPOINT, {
+    method: "POST",
+    headers: { ...authHeaders(token), "Content-Type": "application/json" },
+    body: JSON.stringify({ query: OWNED_PUBLIC_REPOS_QUERY, variables: { username } }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+
+  if (!response.ok) {
+    throw failure("GITHUB_REQUEST_FAILED", `GitHub repo count request failed with status ${response.status}`);
+  }
+
+  const payload = await response.json();
+  if (Array.isArray(payload?.errors) && payload.errors.length > 0) {
+    throw failure("GITHUB_REQUEST_FAILED", `GitHub GraphQL error: ${payload.errors[0]?.message ?? "unknown"}`);
+  }
+
+  const count = payload?.data?.user?.repositories?.totalCount;
+  if (!Number.isInteger(count)) {
+    throw failure("GITHUB_REQUEST_FAILED", "GitHub repo count response had no totalCount");
+  }
+  return count;
 }
 
 /** Confirm the profile exists before paginating potentially hundreds of repositories. */
@@ -173,21 +228,49 @@ async function refreshGithubStats(options = {}) {
   const repositories = [];
   let afterCursor = null;
   let hasNextPage = true;
+  let pageSize = options.pageSize ?? PAGE_SIZE;
 
   while (hasNextPage) {
-    const page = await fetchRepositoryPage({
-      username,
-      afterCursor,
-      token,
-      timeoutMs,
-      fetchImpl,
-    });
+    let page;
+    try {
+      page = await fetchRepositoryPage({
+        username,
+        afterCursor,
+        pageSize,
+        token,
+        timeoutMs,
+        fetchImpl,
+      });
+    } catch (error) {
+      // A gateway error means the query overran GitHub's budget: ask for less, same
+      // cursor. The smaller size is kept for the remaining pages, which cost the same.
+      if (error.retryable && pageSize > MIN_PAGE_SIZE) {
+        const smaller = Math.max(MIN_PAGE_SIZE, Math.floor(pageSize / 2));
+        console.warn("github.page_retry", { reason: error.message, from: pageSize, to: smaller });
+        pageSize = smaller;
+        continue;
+      }
+      throw error;
+    }
     repositories.push(...(page.nodes ?? []));
     hasNextPage = Boolean(page.pageInfo?.hasNextPage);
     afterCursor = page.pageInfo?.endCursor ?? null;
   }
 
   const totals = totalsFrom(repositories);
+
+  // Repos: public and owned, forks included — the profile's number. If that query fails, fall back to the paginated count
+  // (every repository it covered) rather than failing a refresh whose other three numbers
+  // are already in hand.
+  try {
+    totals.totalRepos = await fetchOwnedPublicRepoCount({ username, token, timeoutMs, fetchImpl });
+  } catch (error) {
+    console.warn("github.repo_count_fallback", {
+      code: error?.code ?? null,
+      message: error?.message,
+      fallback: totals.totalRepos,
+    });
+  }
 
   await collection.updateOne(
     { _id: docId },

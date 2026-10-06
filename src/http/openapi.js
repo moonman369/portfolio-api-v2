@@ -80,7 +80,8 @@ function buildComponents(maxMessageChars) {
         ...object({
           _id: str("github_stats"),
           stats: object({
-            repos: int(106),
+            // public, owned repos, forks included (the GitHub profile's count)
+            repos: int(124),
             commits: int(1854),
             pulls: int(45),
             stars: int(238),
@@ -109,7 +110,8 @@ function buildComponents(maxMessageChars) {
         status: str("success"),
         message: str("Refresh success"),
         elapsed: int(8123),
-        totalRepos: int(106),
+        // public, owned repos, forks included (the GitHub profile's count)
+        totalRepos: int(124),
         totalCommits: int(1854),
         totalStars: int(238),
         totalPulls: int(45),

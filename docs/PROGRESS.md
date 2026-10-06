@@ -2242,6 +2242,62 @@ violates CLAUDE.md's standing "no dotenv" rule and does nothing — it reports
 `package.json` either, so it resolves only via a transitive install and would break on a
 clean `npm ci`. One line to delete; left alone because it is outside what was asked.
 
+### Out-of-band fix: `/refresh` failed with GitHub 502 — 2026-10-01
+
+**Symptom.** `refresh.failed { code: 'GITHUB_REQUEST_FAILED', message: 'GitHub GraphQL
+request failed with status 502' }` on every `/api/v1/refresh`.
+
+**Cause — reproduced, not guessed.** Not an outage: GitHub runs a GraphQL query against a
+~10s execution budget and answers an overrun with a bare nginx 502. The repositories query
+asked for 100 repos per page, each with `history.totalCount` on its default branch — cost
+that grows with repos *and* commits. The account now has 113 repositories. Measured live:
+`first: 100` → 502 at 11.1-11.6s, twice; `first: 50` → 200 in 9.1s (at the edge);
+`first: 25` → 200 in 4.4s. The 100 was carried over from the old service, which worked
+until the account outgrew it. The cached document was stale as a result: 100 repos / 2,166
+commits, against a live 113 / 2,362.
+
+**Fix** (`src/stats/github.js`). Page size 25, passed as a query variable; the selection
+set is unchanged, so the numbers mean what they always did. On a 502/503/504 the **same
+cursor** is retried at half the size (25 → 12 → 6 → 5), and the smaller size is kept for
+the remaining pages; at the floor it fails as before. Any other status is not retried.
+Retries live in this outbound layer only, per CLAUDE.md.
+
+**Verified.** 446 offline tests pass (4 new: page size 25; a 502 retries the same cursor
+smaller and completes; a persistent 502 stops after four bounded tries; a 401 is not
+retried). Live dry run against GitHub, with the write captured rather than persisted:
+113 repos, 2,362 commits, 214 PRs, 217 stars, in 21s over 5 pages.
+
+**Open.** A refresh now takes ~21s for this account. That is inside every timeout on the
+path (`GITHUB_TIMEOUT_MS` is per request; Nginx's default `proxy_read_timeout` is 60s), but
+it grows with the repo count — at roughly 4s per 25 repos, 60s is reached around 350
+repositories. Phase 11's cutover checklist should note it.
+
+**Corrected the same day — `repos` is the profile's own count: public, owned, forks
+included** (Ayan: "any visitor can find 124 repos on my github page"). The filter below
+had `isFork: false`, which dropped 18 public forks; the profile's Repositories tab counts
+them. The query is now `repositories(ownerAffiliations: [OWNER], privacy: PUBLIC)`, and
+verified live: 124, equal to GitHub's unauthenticated `public_repos` (124 = 106 originals
++ 18 forks). `/refresh` → 124 / 217 stars / 219 pulls / 2416 commits; `/github` the same.
+Stars, pulls and commits are untouched — they still come from the paginated query's scope
+(non-fork; owner, collaborator and organisation repos). The entry below is kept as it was
+first written.
+
+**Follow-up 2026-10-06 — `repos` now means public, owned, non-fork** (Ayan). The
+paginated query counts collaborator and organisation repos and private ones too (113);
+`repos` should be what a visitor sees on the profile. A separate one-field query —
+`repositories(ownerAffiliations: [OWNER], privacy: PUBLIC, isFork: false) { totalCount }`,
+no pagination — now sets `totalRepos`; stars, pulls and commits still come from the
+paginated query, unchanged. If the count query fails, it logs
+`github.repo_count_fallback` and falls back to the paginated count, so a refresh never
+fails because of it. Document and response shapes unchanged. Asked for in the old repo's
+`refresh_worker.js` / `src/swagger.js`; made here instead (Ayan's call — that repo is
+read-only), in `src/stats/github.js` and `src/http/openapi.js`. Verified live on a fresh
+local instance: `/refresh` → 200 in 16s, `totalRepos` 106, stars 217, pulls 219, commits
+2416; `/github` returns the same four. 449 offline tests pass (3 new). **That refresh
+wrote the stats document in the Mongo database `.env` points at** — if the old production
+API reads the same document, it now serves 106 too, until its own refresh overwrites it
+with its own count.
+
 ## Phase 6 deviations from LLD
 
 41. **The 8-route taxonomy (LLD §2, ARCHITECTURE.md's old §4) is superseded by a 6-label
