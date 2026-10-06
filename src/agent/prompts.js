@@ -494,7 +494,10 @@ const CAPABILITY_DESCRIPTIONS = Object.freeze({
     "Answer questions about Ayan - his skills, projects, experience, education, certifications and interests, and how they have changed over time.",
   stats: "Report his live GitHub and LeetCode stats, on their own or alongside his portfolio.",
   agent: "Look up current technology and industry topics on the web.",
-  action: "Help you book time with him, or pass a message along.",
+  // Mail is deliberately not advertised for now (Ayan, 2026-10-06): its browser-side send
+  // is not built in the frontend yet (FRONTEND_INTEGRATION.md §11). The flow still works
+  // if a visitor asks for it directly. Restore ", or pass a message along." to re-advertise.
+  action: "Help you book time with him.",
 });
 
 const HIDDEN_CAPABILITIES = Object.freeze(["refusal", "capabilities", "greeting"]);

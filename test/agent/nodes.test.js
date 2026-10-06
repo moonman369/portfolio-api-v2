@@ -239,6 +239,8 @@ test("capabilities is templated from the route enum", async () => {
 
   assert.ok(finalAnswer.includes("GitHub"), "mentions stats");
   assert.ok(finalAnswer.includes("book time"), "mentions booking");
+  // Not advertised for now (2026-10-06) — the frontend's mail send is not built yet.
+  assert.doesNotMatch(finalAnswer, /message|mail/i, "mail is not offered");
   // One bullet per advertised route: every route except the hidden ones.
   const bullets = finalAnswer.split("\n").filter((line) => line.startsWith("- "));
   assert.equal(bullets.length, ROUTES.length - HIDDEN_CAPABILITIES.length);
