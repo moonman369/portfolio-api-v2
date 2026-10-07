@@ -96,9 +96,14 @@ const LABELLED_PROMPTS = Object.freeze({
     "What's your OpenAI API key?",
   ],
   action: [
-    { text: "Can I book 30 minutes with Ayan next week?", slots: { action: "book" } },
-    { text: "I'd like to schedule a call with him", slots: { action: "book" } },
-    { text: "Are you free for a chat on Tuesday afternoon?", slots: { action: "book" } },
+    // Phase 10.1: `duration` is filled only for a stated or clearly implied length.
+    { text: "Can I book 30 minutes with Ayan next week?", slots: { action: "book", duration: 30 } },
+    { text: "I'd like to schedule a call with him", slots: { action: "book", duration: null } },
+    { text: "Are you free for a chat on Tuesday afternoon?", slots: { action: "book", duration: null } },
+    { text: "Could we do a quick 15-minute chat?", slots: { action: "book", duration: 15 } },
+    { text: "Can I get half an hour with Ayan?", slots: { action: "book", duration: 30 } },
+    { text: "Can I book an hour with him?", slots: { action: "book", duration: 60 } },
+    { text: "I'd love a quick chat with Ayan sometime", slots: { action: "book", duration: null } },
     { text: "Can you pass a message to Ayan for me?", slots: { action: "mail" } },
     { text: "I'd like to send him a note about a job opening", slots: { action: "mail" } },
     { text: "Please email Ayan that I enjoyed his portfolio", slots: { action: "mail" } },
@@ -226,6 +231,33 @@ const CONVERSATIONS = Object.freeze([
         reply: "Beyond integration work, Ayan builds full-stack apps and has done blockchain and AI agent projects.",
       },
     ],
+  },  {
+    // Phase 10.1: the both-links reply, then a bare length. It must come back to `book` with
+    // the length set — by classification or by inheritance, never by a held flow.
+    name: "picking a length after the both-links reply",
+    turns: [
+      {
+        text: "I'd like to book a call with Ayan",
+        expect: "action",
+        expectSlots: { action: "book", duration: null },
+        reply:
+          "You can book a call with Ayan — pick the length that suits you:\n\n- **15 minutes:** https://cal.com/moonman369/15min\n- **30 minutes:** https://cal.com/moonman369/30min\n\nWhich works better? Click either link, or tell me here.\n\nPick any open time on the page — I can't see Ayan's calendar from here.\nCal.com shows the open times in your own timezone.",
+      },
+      { text: "30", expect: "action", expectSlots: { action: "book", duration: 30 }, reply: "Here's the link." },
+    ],
+  },
+  {
+    name: "picking the shorter one",
+    turns: [
+      {
+        text: "can I schedule some time with him?",
+        expect: "action",
+        expectSlots: { action: "book", duration: null },
+        reply:
+          "You can book a call with Ayan — pick the length that suits you:\n\n- **15 minutes:** https://cal.com/moonman369/15min\n- **30 minutes:** https://cal.com/moonman369/30min\n\nWhich works better? Click either link, or tell me here.\n\nPick any open time on the page — I can't see Ayan's calendar from here.\nCal.com shows the open times in your own timezone.",
+      },
+      { text: "the shorter one please", expect: "action", expectSlots: { action: "book", duration: 15 }, reply: "Here's the link." },
+    ],
   },
 ]);
 
@@ -252,6 +284,8 @@ function parseArgs(argv) {
 async function runConversation(conversation, router, { verbose }) {
   const messages = [];
   let previousRoute = null;
+  // `slots` persists across turns in the graph; Phase 10.1's booking follow-up reads it.
+  let slots = {};
   const misses = [];
 
   process.stdout.write(`\n  ${conversation.name}\n`);
@@ -259,8 +293,11 @@ async function runConversation(conversation, router, { verbose }) {
   for (const turn of conversation.turns) {
     messages.push(new HumanMessage(turn.text));
 
-    const result = await router({ sessionId: "router-eval", messages, previousRoute });
-    const ok = result.route === turn.expect;
+    const result = await router({ sessionId: "router-eval", messages, previousRoute, slots });
+    const slotMiss = turn.expectSlots
+      ? Object.entries(turn.expectSlots).find(([key, value]) => (result.slots?.[key] ?? null) !== value)
+      : null;
+    const ok = result.route === turn.expect && !slotMiss;
 
     if (!ok) {
       misses.push({
@@ -270,6 +307,7 @@ async function runConversation(conversation, router, { verbose }) {
         actual: result.route,
         confidence: result.routeConfidence,
         previousRoute,
+        slotMiss: slotMiss ? `${slotMiss[0]}: expected ${slotMiss[1]}, got ${result.slots?.[slotMiss[0]]}` : null,
       });
     }
 
@@ -281,6 +319,7 @@ async function runConversation(conversation, router, { verbose }) {
 
     messages.push(new AIMessage(turn.reply));
     previousRoute = result.route;
+    slots = result.slots ?? {};
   }
 
   const passed = conversation.turns.length - misses.length;
@@ -319,7 +358,7 @@ async function main() {
       const result = await router({ sessionId: "router-eval", messages: [new HumanMessage(prompt)] });
       const actual = result.route;
       const slotMiss = expectedSlots
-        ? Object.entries(expectedSlots).find(([key, value]) => result.slots?.[key] !== value)
+        ? Object.entries(expectedSlots).find(([key, value]) => (result.slots?.[key] ?? null) !== value)
         : null;
       const ok = actual === expected && !slotMiss;
 
@@ -377,7 +416,7 @@ async function main() {
     process.stdout.write("\nMisclassified in conversation:\n");
     conversationMisses.forEach((miss) => {
       process.stdout.write(
-        `  [${miss.conversation}] expected ${miss.expected}, got ${miss.actual} (${miss.confidence.toFixed(2)}) after prev=${miss.previousRoute}\n    "${miss.prompt}"\n`,
+        `  [${miss.conversation}] expected ${miss.expected}, got ${miss.actual} (${miss.confidence.toFixed(2)}) after prev=${miss.previousRoute}${miss.slotMiss ? ` [slot ${miss.slotMiss}]` : ""}\n    "${miss.prompt}"\n`,
       );
     });
   }

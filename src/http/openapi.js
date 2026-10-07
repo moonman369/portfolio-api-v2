@@ -38,7 +38,11 @@ const object = (properties, required) => ({
 const str = (example) => ({ type: "string", ...(example === undefined ? {} : { example }) });
 const int = (example) => ({ type: "integer", ...(example === undefined ? {} : { example }) });
 
-function buildComponents(maxMessageChars) {
+function buildComponents(maxMessageChars, mailEnabled) {
+  // Mail is paused behind MOONMIND_MAIL_ENABLED (Phase 10.1): off, neither its schemas nor
+  // the `mail` response field are documented, matching what the routes return.
+  const mailField = mailEnabled ? { mail: ref("MailAction") } : {};
+
   return {
     securitySchemes: {
       [PASSWORD_SCHEME]: {
@@ -128,26 +132,30 @@ function buildComponents(maxMessageChars) {
         items: { type: "object", additionalProperties: true },
       },
 
-      MailAction: {
-        type: "object",
-        nullable: true,
-        description:
-          "Phase 10 mail flow. Null on every turn but two. `type: \"confirm\"` — show a confirm card with `to`, `from`, `subject` and `body` exactly as given, and send `replies.confirm` or `replies.cancel` as the next chat message. `type: \"submit\"` — POST `body` (a JSON string, byte for byte) to `endpoint` with `headers`, from the browser, then report the outcome to `POST /api/v1/moonmind/mail/{submissionId}/result`. The payload never carries a recipient: Web3Forms delivers to the inbox bound to the access key.",
-        additionalProperties: true,
-      },
-
-      MailResult: object(
-        {
-          status: { type: "string", enum: ["sent", "failed"] },
-          digest: {
-            type: "string",
-            pattern: "^[a-f0-9]{64}$",
-            description: "SHA-256 (hex) of the exact bytes POSTed to Web3Forms.",
+      ...(mailEnabled
+        ? {
+          MailAction: {
+            type: "object",
+            nullable: true,
+            description:
+              "Phase 10 mail flow. Null on every turn but two. `type: \"confirm\"` — show a confirm card with `to`, `from`, `subject` and `body` exactly as given, and send `replies.confirm` or `replies.cancel` as the next chat message. `type: \"submit\"` — POST `body` (a JSON string, byte for byte) to `endpoint` with `headers`, from the browser, then report the outcome to `POST /api/v1/moonmind/mail/{submissionId}/result`. The payload never carries a recipient: Web3Forms delivers to the inbox bound to the access key.",
+            additionalProperties: true,
           },
-          providerMessage: { type: "string", maxLength: 300, description: "Web3Forms' message, on failure." },
-        },
-        ["status"],
-      ),
+
+          MailResult: object(
+            {
+              status: { type: "string", enum: ["sent", "failed"] },
+              digest: {
+                type: "string",
+                pattern: "^[a-f0-9]{64}$",
+                description: "SHA-256 (hex) of the exact bytes POSTed to Web3Forms.",
+              },
+              providerMessage: { type: "string", maxLength: 300, description: "Web3Forms' message, on failure." },
+            },
+            ["status"],
+          ),
+          }
+        : {}),
 
       ChatResponse: object({
         status: str("success"),
@@ -167,7 +175,7 @@ function buildComponents(maxMessageChars) {
             items: { type: "object", additionalProperties: true },
           },
           sources: ref("AgentSources"),
-          mail: ref("MailAction"),
+          ...mailField,
         }),
       }),
 
@@ -215,7 +223,7 @@ function buildComponents(maxMessageChars) {
           documentIds: { type: "array", items: str(), description: "Their ids, for convenience." },
           documentCount: int(8),
           sources: ref("AgentSources"),
-          mail: ref("MailAction"),
+          ...mailField,
           startedAt: str(),
           finishedAt: { type: "string", nullable: true },
           steps: { type: "array", items: ref("RunStep") },
@@ -240,7 +248,7 @@ function buildComponents(maxMessageChars) {
 
 const secured = [{ [PASSWORD_SCHEME]: [] }];
 
-function buildPaths() {
+function buildPaths(mailEnabled) {
   const unauthorized = { 401: errorResponse("Missing or incorrect password") };
   const documentBody = { required: true, ...json(ref("DocumentPayload")) };
 
@@ -376,26 +384,31 @@ function buildPaths() {
       },
     },
 
-    "/api/v1/moonmind/mail/{submissionId}/result": {
-      post: {
-        tags: ["MoonMind"],
-        summary: "Report a browser mail submission's outcome",
-        description:
-          "The browser POSTs the `mail.type: submit` payload to Web3Forms itself (the free plan refuses server-side calls), then reports what happened here. Only a pending submission moves, and only once.",
-        security: secured,
-        parameters: [
-          { name: "submissionId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
-        ],
-        requestBody: { required: true, ...json(ref("MailResult")) },
-        responses: {
-          200: { description: "Recorded" },
-          400: errorResponse("submissionId is not a UUID, or the body is invalid"),
-          ...unauthorized,
-          404: errorResponse("No mail with that id"),
-          409: errorResponse("That mail's outcome was already reported"),
+    // Mounted only while mail is on (MOONMIND_MAIL_ENABLED); paused since Phase 10.1.
+    ...(mailEnabled
+      ? {
+        "/api/v1/moonmind/mail/{submissionId}/result": {
+          post: {
+            tags: ["MoonMind"],
+            summary: "Report a browser mail submission's outcome",
+            description:
+              "The browser POSTs the `mail.type: submit` payload to Web3Forms itself (the free plan refuses server-side calls), then reports what happened here. Only a pending submission moves, and only once.",
+            security: secured,
+            parameters: [
+              { name: "submissionId", in: "path", required: true, schema: { type: "string", format: "uuid" } },
+            ],
+            requestBody: { required: true, ...json(ref("MailResult")) },
+            responses: {
+              200: { description: "Recorded" },
+              400: errorResponse("submissionId is not a UUID, or the body is invalid"),
+              ...unauthorized,
+              404: errorResponse("No mail with that id"),
+              409: errorResponse("That mail's outcome was already reported"),
+            },
+          },
         },
-      },
-    },
+        }
+      : {}),
 
     "/api/v1/moonmind/createDoc": {
       post: {
@@ -525,7 +538,7 @@ function buildPaths() {
 }
 
 /** The full OpenAPI document. */
-function buildOpenApiDocument({ maxMessageChars = 4000, version = "0.1.0" } = {}) {
+function buildOpenApiDocument({ maxMessageChars = 4000, version = "0.1.0", mailEnabled = false } = {}) {
   return {
     openapi: "3.0.3",
     info: {
@@ -550,8 +563,8 @@ function buildOpenApiDocument({ maxMessageChars = 4000, version = "0.1.0" } = {}
       { name: "MoonMind", description: "Agentic chat" },
       { name: "Documents", description: "Vector document ingestion" },
     ],
-    components: buildComponents(maxMessageChars),
-    paths: buildPaths(),
+    components: buildComponents(maxMessageChars, mailEnabled),
+    paths: buildPaths(mailEnabled),
   };
 }
 

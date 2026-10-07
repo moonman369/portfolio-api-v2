@@ -1,9 +1,13 @@
 "use strict";
 
 // Phase 10's action node, end to end through a real compiled graph: the real router, the
-// real action node and the real generate pass-through, with the models, the DNS resolver
-// and the mail store faked. Multi-turn flows run on one checkpointed session, exactly as
-// production threads them.
+// real action node and the real generate pass-through, with the models, the DNS resolver,
+// the mail store and the booking-link check faked. Multi-turn flows run on one checkpointed
+// session, exactly as production threads them.
+//
+// Mail is paused by default since Phase 10.1 (MOONMIND_MAIL_ENABLED). These tests switch it
+// ON explicitly in their config, so they keep guarding the flag-gated mail code. Booking
+// and the paused behaviour are covered in booking.test.js.
 
 process.env.MONGO_URI ??= "mongodb://localhost:27017/test";
 process.env.GITHUB_PAT ??= "t";
@@ -13,12 +17,15 @@ process.env.OPENAI_API_KEY ??= "sk-test";
 process.env.MOONMIND_PASSWORD ??= "pw";
 process.env.GEMINI_API_KEY ??= "gem-test";
 process.env.TAVILY_API_KEY ??= "tvly-test";
+process.env.MOONMIND_BOOKING_URL_15MIN ??= "https://cal.com/example/15min";
+process.env.MOONMIND_BOOKING_URL_30MIN ??= "https://cal.com/example/30min";
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { MemorySaver } = require("@langchain/langgraph");
 const { HumanMessage } = require("@langchain/core/messages");
 
+const { getConfig } = require("../../src/config");
 const { buildGraph } = require("../../src/agent/graph");
 const { ROUTES, PER_TURN_RESET } = require("../../src/agent/state");
 const { createRouterNode } = require("../../src/agent/nodes/router");
@@ -31,15 +38,14 @@ const {
   MAIL_CANCELLED_ANSWER,
   MAIL_UNAVAILABLE_ANSWER,
   MAIL_ISSUE_FAILED_ANSWER,
-  BOOKING_UNAVAILABLE_ANSWER,
 } = require("../../src/agent/prompts");
 
 const CONFIG = Object.freeze({
-  action: {
-    calendlyUrl: "https://calendly.com/example/30min",
-    bookingWindows: "weekdays 7–10pm IST and weekends 10am–6pm IST",
+  booking: {
+    urls: { 15: "https://cal.com/example/15min", 30: "https://cal.com/example/30min" },
   },
   mail: {
+    enabled: true,
     accessKey: "public-access-key",
     endpoint: "https://api.web3forms.com/submit",
     maxPerSession: 3,
@@ -111,14 +117,23 @@ function harness({ routes = [], drafts = [], store = memoryStore(), config = CON
   const captureModel = scripted(drafts);
   const visited = [];
 
-  const nodes = { router: createRouterNode({ model: routerModel }), generate: createGenerateNode() };
+  // The router reads the mail flag too, so it gets the same switch the action node does.
+  const routerConfig = { ...getConfig(), mail: config.mail };
+  const nodes = { router: createRouterNode({ model: routerModel, config: routerConfig }), generate: createGenerateNode() };
   ROUTES.forEach((route) => {
     nodes[route] = async () => {
       visited.push(route);
       return { finalAnswer: `answer from ${route}` };
     };
   });
-  const action = createActionNode({ model: captureModel, config, validate, store, newId: () => "11111111-1111-4111-8111-111111111111" });
+  const action = createActionNode({
+    model: captureModel,
+    config,
+    validate,
+    store,
+    newId: () => "11111111-1111-4111-8111-111111111111",
+    checkLink: async () => ({ outcome: "ok", httpStatus: 200, errorCode: null }),
+  });
   nodes.action = async (state, runConfig) => {
     visited.push("action");
     return action(state, runConfig);
@@ -143,7 +158,7 @@ const DRAFT = { senderName: null, senderEmail: null, subject: "A backend role", 
 // book
 // ---------------------------------------------------------------------------
 
-test("book returns the windows and the link, with no model call beyond routing and no tool", async () => {
+test("mail on: book still answers with the Cal.com links, with no model call beyond routing", async () => {
   const h = harness({ routes: [classified("action", { action: "book", preference: "Tuesday afternoon" })] });
 
   const turn = await h.say("Can I book a call with Ayan on Tuesday afternoon?");
@@ -152,20 +167,12 @@ test("book returns the windows and the link, with no model call beyond routing a
   assert.equal(h.routerModel.calls, 1, "routing is the only model call");
   assert.equal(h.captureModel.calls, 0);
   assert.equal(turn.mailAction, null);
-  assert.ok(turn.finalAnswer.includes(CONFIG.action.calendlyUrl));
-  assert.ok(turn.finalAnswer.includes(CONFIG.action.bookingWindows), "the configured windows, verbatim");
+  assert.ok(turn.finalAnswer.includes(CONFIG.booking.urls[15]));
+  assert.ok(turn.finalAnswer.includes(CONFIG.booking.urls[30]));
   assert.ok(turn.finalAnswer.includes("Tuesday afternoon"), "the stated preference is reflected");
   assert.match(turn.finalAnswer, /can't promise/);
   assert.doesNotMatch(turn.finalAnswer, /you('re| are) booked|booking (is )?confirmed|he('s| is) (free|available)|is available/i);
   assert.equal(turn.activeFlow, null, "booking is one turn — no flow is opened");
-});
-
-test("book without a configured link says so instead of inventing one", async () => {
-  const h = harness({
-    routes: [classified("action", { action: "book" })],
-    config: { ...CONFIG, action: { calendlyUrl: null, bookingWindows: null } },
-  });
-  assert.equal((await h.say("book a call")).finalAnswer, BOOKING_UNAVAILABLE_ANSWER);
 });
 
 // ---------------------------------------------------------------------------
@@ -341,7 +348,7 @@ test("asking to book mid-flow moves to booking and ends the mail flow", async ()
   await h.say("send Ayan a message about a backend role");
   const t2 = await h.say("actually can I just book a call instead?");
 
-  assert.ok(t2.finalAnswer.includes(CONFIG.action.calendlyUrl));
+  assert.ok(t2.finalAnswer.includes(CONFIG.booking.urls[30]));
   assert.equal(t2.activeFlow, null);
 });
 

@@ -27,6 +27,12 @@ const positiveInt = z.coerce.number().int().positive();
 // Ranking weights are unbounded above — a weight of 5 is legitimate — so this only
 // rejects negatives and non-numbers.
 const nonNegativeFloat = z.coerce.number().min(0);
+// A link shown to visitors: absolute and https, nothing else.
+const httpsUrl = z
+  .string()
+  .trim()
+  .url()
+  .refine((value) => value.startsWith("https://"), "must be an https URL");
 
 // Accepts the shapes an operator actually types into a .env file.
 //
@@ -121,17 +127,27 @@ const envSchema = z.object({
   // "advanced" costs 2 credits per search instead of 1 and returns longer extracts.
   TAVILY_SEARCH_DEPTH: z.enum(["basic", "advanced"]).default("basic"),
 
-  // ---- The action node: scheduling link + mail (Phase 10) ----------------
-  // Booking is a link, nothing more: no calendar API, no availability check. Both values
-  // are Ayan's to set on the VM (decided at the Phase 10 gate), and the windows wording
-  // must say exactly what the Calendly event enforces — the bot repeats it verbatim.
-  // Unset, `book` says scheduling is unavailable rather than inventing either.
-  MOONMIND_CALENDLY_URL: z.string().trim().url().optional(),
-  MOONMIND_BOOKING_WINDOWS: z.string().trim().min(1).optional(),
+  // ---- The action node: scheduling links (Phase 10.1) ---------------------
+  // Booking is a link, nothing more: no calendar API, no webhook, no availability. One
+  // Cal.com event per meeting length. Required, so a missing one stops the boot rather than
+  // surfacing in front of a visitor. Bookable hours and timezone live ONLY in Cal.com —
+  // nothing here states them, so the bot can never disagree with the booking page.
+  MOONMIND_BOOKING_URL_15MIN: httpsUrl,
+  MOONMIND_BOOKING_URL_30MIN: httpsUrl,
+  // The one outbound call `book` makes: a GET on each link it is about to show.
+  MOONMIND_BOOKING_CHECK_TIMEOUT_MS: positiveInt.default(3000),
+  // How long a link's result — good or bad — is reused before Cal.com is asked again.
+  MOONMIND_BOOKING_CHECK_CACHE_MS: positiveInt.default(5 * 60 * 1000),
+
+  // ---- The action node: mail (Phase 10, paused in 10.1) -------------------
+  // Paused: off, every mail route is unmounted and a mail request gets a templated reply
+  // pointing at booking instead. The code stays, gated — see PROGRESS.md Decisions.
+  MOONMIND_MAIL_ENABLED: booleanFlag(false),
   // Web3Forms is submitted FROM THE BROWSER: its free plan answers a server-side call with
   // 403 (paid plan + IP safelist only). The backend validates and composes the payload,
   // and the frontend POSTs it verbatim. The key is public by Web3Forms' design, and the
-  // recipient is bound to it — no payload field can set one. Unset, `mail` is unavailable.
+  // recipient is bound to it — no payload field can set one. Required only when mail is
+  // enabled (checked below the schema).
   WEB3FORMS_ACCESS_KEY: z.string().trim().min(1).optional(),
   WEB3FORMS_ENDPOINT: z.string().trim().url().default("https://api.web3forms.com/submit"),
   // Caps are counted when the backend ISSUES a payload — the one point it controls.
@@ -275,6 +291,15 @@ function loadConfig(env) {
 
   const raw = parsed.data;
 
+  // Mail needs its key only while it is on: with mail paused, a VM without one still boots.
+  if (raw.MOONMIND_MAIL_ENABLED && !raw.WEB3FORMS_ACCESS_KEY) {
+    throw new Error(
+      describeFailure({
+        issues: [{ path: ["WEB3FORMS_ACCESS_KEY"], message: "Required when MOONMIND_MAIL_ENABLED is on" }],
+      }),
+    );
+  }
+
   return deepFreeze({
     env: raw.NODE_ENV,
     isProduction: raw.NODE_ENV === "production",
@@ -350,11 +375,18 @@ function loadConfig(env) {
       escalationMinTopScore: raw.MOONMIND_ESCALATION_MIN_TOP_SCORE,
       escalationTerms: raw.MOONMIND_ESCALATION_TERMS,
     },
-    action: {
-      calendlyUrl: raw.MOONMIND_CALENDLY_URL ?? null,
-      bookingWindows: raw.MOONMIND_BOOKING_WINDOWS ?? null,
+    booking: {
+      // Keyed by meeting length in minutes. The offered lengths ARE these keys: nothing
+      // else in the codebase lists them.
+      urls: {
+        15: raw.MOONMIND_BOOKING_URL_15MIN,
+        30: raw.MOONMIND_BOOKING_URL_30MIN,
+      },
+      checkTimeoutMs: raw.MOONMIND_BOOKING_CHECK_TIMEOUT_MS,
+      checkCacheMs: raw.MOONMIND_BOOKING_CHECK_CACHE_MS,
     },
     mail: {
+      enabled: raw.MOONMIND_MAIL_ENABLED,
       accessKey: raw.WEB3FORMS_ACCESS_KEY ?? null,
       endpoint: raw.WEB3FORMS_ENDPOINT,
       maxPerSession: raw.MOONMIND_MAIL_MAX_PER_SESSION,

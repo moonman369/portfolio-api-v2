@@ -12,6 +12,8 @@ process.env.OPENAI_API_KEY ??= "sk-test";
 process.env.MOONMIND_PASSWORD ??= "hunter2";
 process.env.GEMINI_API_KEY ??= "gem-test";
 process.env.TAVILY_API_KEY ??= "tvly-test";
+process.env.MOONMIND_BOOKING_URL_15MIN ??= "https://cal.com/example/15min";
+process.env.MOONMIND_BOOKING_URL_30MIN ??= "https://cal.com/example/30min";
 
 const test = require("node:test");
 const assert = require("node:assert/strict");

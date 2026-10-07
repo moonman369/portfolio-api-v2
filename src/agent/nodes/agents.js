@@ -31,7 +31,7 @@ const {
   buildEscalationContext,
   buildScopePrompt,
   resolveExcludedTopics,
-  OUT_OF_SCOPE_ANSWER,
+  buildOutOfScopeAnswer,
 } = require("../prompts");
 
 // Flat, and two fields only — this runs before every search, so it is the one model call
@@ -218,7 +218,7 @@ function makeAgentNode({ name, toolset, prompt, maxSteps, sourcesField, scopeGua
       // dispatched and no search credit is spent. `generate` passes `finalAnswer`
       // through, so the visitor gets this copy verbatim rather than a model's take on it.
       if (!inScope) {
-        return { ...empty, finalAnswer: OUT_OF_SCOPE_ANSWER };
+        return { ...empty, finalAnswer: buildOutOfScopeAnswer({ mailEnabled: config.mail?.enabled === true }) };
       }
     }
 

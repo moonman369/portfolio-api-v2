@@ -65,9 +65,16 @@ const ROUTER_SYSTEM_PROMPT = [
   "  about him is knowledge, however many sources it would take to answer.",
   "- `confidence` is how certain you are, from 0 to 1. Be honest: a vague or ambiguous",
   "  message should score low. Do not inflate it.",
-  "- `which` and `withDocuments` matter only for stats; `action` and `preference` only for",
-  "  action. `preference` is the day or time the visitor asked to book, in their words",
-  '  ("Tuesday afternoon", "next week"), or null. Never guess one.',
+  "- `which` and `withDocuments` matter only for stats; `action`, `preference` and",
+  "  `duration` only for action. `preference` is the day or time the visitor asked to book,",
+  '  in their words ("Tuesday afternoon", "next week"), or null. Never guess one. A',
+  '  meeting length ("30", "15 min", "half an hour") is `duration`, never `preference`.',
+  "- `duration` is the meeting length in minutes, filled ONLY when the visitor states or",
+  '  clearly implies one: "a quick 15-minute chat" and "the short one" are 15; "half an',
+  '  hour", "30" and "the longer one" are 30; "an hour" is 60. Otherwise null. Never guess',
+  '  one from tone: "a quick chat" alone is null.',
+  '- Right after a booking reply, a bare length or choice - "30", "15 min please", "the',
+  '  longer one" - is the same booking request: route action, `action` book.',
   "- `cancelsActiveFlow` is true only when the user is explicitly abandoning an",
   '  in-progress task, e.g. "cancel", "never mind", "forget it", "stop".',
 ].join("\n");
@@ -256,13 +263,29 @@ function buildStatsContext(statsPayload) {
   return lines.length > 1 ? lines.join("\n") : null;
 }
 
+// Two of the canned answers offer mail. While mail is paused (MOONMIND_MAIL_ENABLED) they
+// offer booking instead; both versions are dead-ends to the router, so both stay listed in
+// CANNED_DEAD_ENDS below.
 const REFUSAL_ANSWER = [
+  "I can't help with that one.",
+  "",
+  "I'm MoonMind - I answer questions about Ayan's work, his GitHub and LeetCode stats,",
+  "and tech topics, and I can help you book a call with him. Ask me any of those and",
+  "I'll do my best.",
+].join("\n");
+
+const REFUSAL_ANSWER_WITH_MAIL = [
   "I can't help with that one.",
   "",
   "I'm MoonMind - I answer questions about Ayan's work, his GitHub and LeetCode stats,",
   "and tech topics, and I can pass a message along to him. Ask me any of those and",
   "I'll do my best.",
 ].join("\n");
+
+/** The refusal, offering only what is switched on. */
+function buildRefusalAnswer({ mailEnabled = false } = {}) {
+  return mailEnabled ? REFUSAL_ANSWER_WITH_MAIL : REFUSAL_ANSWER;
+}
 
 // Shown when a node throws. The error boundary sets this, so a failure still reads as
 // an answer rather than a 500.
@@ -425,8 +448,20 @@ const OUT_OF_SCOPE_ANSWER = [
   "That one's beyond what MoonMind covers.",
   "",
   "I answer questions about Ayan's work, his GitHub and LeetCode stats, and technology",
+  "topics, and I can help you book a call with him. Ask me any of those and I'll do my best.",
+].join("\n");
+
+const OUT_OF_SCOPE_ANSWER_WITH_MAIL = [
+  "That one's beyond what MoonMind covers.",
+  "",
+  "I answer questions about Ayan's work, his GitHub and LeetCode stats, and technology",
   "topics, and I can pass a message along to him. Ask me any of those and I'll do my best.",
 ].join("\n");
+
+/** The scope guard's answer, offering only what is switched on. */
+function buildOutOfScopeAnswer({ mailEnabled = false } = {}) {
+  return mailEnabled ? OUT_OF_SCOPE_ANSWER_WITH_MAIL : OUT_OF_SCOPE_ANSWER;
+}
 
 /** Shown when an agent used every step it had and never got to write an answer. */
 function buildTruncatedAnswer(sources = []) {
@@ -479,9 +514,11 @@ const AGENT_NO_ANSWER = [
 const CANNED_DEAD_ENDS = Object.freeze(
   new Set([
     REFUSAL_ANSWER,
+    REFUSAL_ANSWER_WITH_MAIL,
     ERROR_ANSWER,
     NOT_IMPLEMENTED_ANSWER,
     OUT_OF_SCOPE_ANSWER,
+    OUT_OF_SCOPE_ANSWER_WITH_MAIL,
     AGENT_NO_ANSWER,
   ]),
 );
@@ -494,11 +531,11 @@ const CAPABILITY_DESCRIPTIONS = Object.freeze({
     "Answer questions about Ayan - his skills, projects, experience, education, certifications and interests, and how they have changed over time.",
   stats: "Report his live GitHub and LeetCode stats, on their own or alongside his portfolio.",
   agent: "Look up current technology and industry topics on the web.",
-  // Mail is deliberately not advertised for now (Ayan, 2026-10-06): its browser-side send
-  // is not built in the frontend yet (FRONTEND_INTEGRATION.md §11). The flow still works
-  // if a visitor asks for it directly. Restore ", or pass a message along." to re-advertise.
   action: "Help you book time with him.",
 });
+
+// `action` while mail is on (MOONMIND_MAIL_ENABLED). Paused since Phase 10.1.
+const ACTION_CAPABILITY_WITH_MAIL = "Help you book time with him, or pass a message along.";
 
 const HIDDEN_CAPABILITIES = Object.freeze(["refusal", "capabilities", "greeting"]);
 
@@ -545,26 +582,121 @@ const MAIL_CAPTURE_PROMPT = [
   "  date, number or detail they did not give, and never add a greeting or signature.",
 ].join("\n");
 
-const BOOKING_UNAVAILABLE_ANSWER =
-  "Booking a call through me isn't set up right now. You can still send Ayan a message here, and he'll get back to you.";
-
+// Asked only while mail is on: with it paused, an unclear `action` request goes straight to
+// booking, the one thing left to offer.
 const ACTION_CLARIFY_ANSWER =
   "Happy to help you reach Ayan. Would you like to book a call with him, or send him a message?";
 
+// ---- book (Phase 10.1): Cal.com links, checked before they are shown --------------------
+//
+// Every reply here is a fixed template; no model writes any of it. Nothing knows Ayan's
+// availability or whether a booking happened, and no reply states hours, windows or a
+// timezone — those live only in Cal.com, so the bot can never disagree with the page.
+// Lengths are passed in (from `config.booking.urls`), never listed here.
+
+const TIMEZONE_NOTE = "Cal.com shows the open times in your own timezone.";
+
+/** "15- or 30-minute", from whatever lengths are offered. */
+function lengthsPhrase(lengths) {
+  return `${lengths.join("- or ")}-minute`;
+}
+
+function preferenceLine(preference) {
+  return preference
+    ? `You mentioned ${preference} — pick an open time that suits you on the page. I can't see Ayan's calendar, so I can't promise a particular time is free.`
+    : "Pick any open time on the page — I can't see Ayan's calendar from here.";
+}
+
+// Why a length is missing, in plain words. Never a status code, a URL or an error.
+const LINK_PROBLEM = Object.freeze({
+  not_found: "its booking page couldn't be found",
+  unreachable: "Cal.com isn't responding for it right now",
+});
+
 /**
- * The `book` answer: the configured windows, stated as configured, and the link. Nothing
- * here knows his availability or whether a booking exists, and the copy never implies it.
+ * Every link checked out. One link when the visitor named an offered length; otherwise all
+ * of them, labelled, with the choice left to the visitor. `unsupported` is a length they
+ * asked for that is not offered ("an hour").
+ *
+ * @param {{ links: Array<{ minutes: number, url: string }>, offered: number[],
+ *          unsupported?: number|null, preference?: string|null }} params
  */
-function buildBookingAnswer({ calendlyUrl, bookingWindows, preference }) {
-  const lines = [`You can book a call with Ayan here: ${calendlyUrl}`, ""];
-  lines.push(`Ayan's bookable windows: ${bookingWindows}`);
-  lines.push(
-    preference
-      ? `You mentioned ${preference} — pick whichever open slot suits you on that page. I can't see his calendar, so I can't promise a particular time is free.`
-      : "The page shows which slots are open — I can't see his calendar from here.",
-  );
-  lines.push("", "Calendly confirms the booking by email once you pick a slot.");
+function buildBookingAnswer({ links, offered, unsupported = null, preference = null }) {
+  const lines = [];
+
+  if (links.length === 1) {
+    const [{ minutes, url }] = links;
+    lines.push(`Here's the link to book a ${minutes}-minute call with Ayan: ${url}`);
+  } else {
+    lines.push(
+      unsupported
+        ? `I can only offer ${lengthsPhrase(offered)} calls, not ${unsupported} minutes — here are both:`
+        : "You can book a call with Ayan — pick the length that suits you:",
+      "",
+      ...links.map(({ minutes, url }) => `- **${minutes} minutes:** ${url}`),
+      "",
+      "Which works better? Click either link, or tell me here.",
+    );
+  }
+
+  lines.push("", preferenceLine(preference), TIMEZONE_NOTE);
   return lines.join("\n");
+}
+
+/**
+ * Some lengths failed their check and at least one works. Says which length is missing
+ * and why, in plain words, and offers only the working link(s).
+ *
+ * @param {{ broken: Array<{ minutes: number, outcome: string }>,
+ *          working: Array<{ minutes: number, url: string }>, askedForBroken: boolean,
+ *          preference?: string|null }} params
+ */
+function buildBookingPartialAnswer({ broken, working, askedForBroken, preference = null }) {
+  const lines = broken.map(
+    ({ minutes, outcome }) =>
+      `The ${minutes}-minute ${askedForBroken ? "meeting you asked for" : "option"} isn't available right now — ${LINK_PROBLEM[outcome] ?? LINK_PROBLEM.unreachable}.`,
+  );
+
+  if (working.length === 1) {
+    const [{ minutes, url }] = working;
+    lines.push(
+      askedForBroken
+        ? `You can book a ${minutes}-minute call with Ayan instead: ${url}`
+        : `You can still book a ${minutes}-minute call with Ayan: ${url}`,
+    );
+  } else {
+    lines.push("You can still book one of these:", ...working.map(({ minutes, url }) => `- **${minutes} minutes:** ${url}`));
+  }
+
+  lines.push("", preferenceLine(preference), TIMEZONE_NOTE);
+  return lines.join("\n");
+}
+
+// Every link failed. No link is shown: a broken one would only send the visitor to an error.
+const BOOKING_NOT_FOUND_ANSWER =
+  "Booking isn't set up correctly right now — the meeting page couldn't be found. Please try again later.";
+const BOOKING_UNREACHABLE_ANSWER =
+  "Cal.com isn't responding right now, so I can't give you a working booking link. Please try again in a few minutes.";
+// One page missing and another not responding: neither specific message is true on its own.
+const BOOKING_FAILED_ANSWER =
+  "Booking isn't available right now — I couldn't get a working meeting page from Cal.com. Please try again later.";
+
+/** Every link failed: the one message that is true for all of them. */
+function buildBookingFailedAnswer(outcomes) {
+  if (outcomes.every((outcome) => outcome === "not_found")) return BOOKING_NOT_FOUND_ANSWER;
+  if (outcomes.every((outcome) => outcome === "unreachable")) return BOOKING_UNREACHABLE_ANSWER;
+  return BOOKING_FAILED_ANSWER;
+}
+
+/**
+ * Put in front of a booking reply when someone asked to send a message while mail is
+ * paused (MOONMIND_MAIL_ENABLED off). `canBook` is false when every link failed its check,
+ * so the line never offers a booking the reply below it cannot give.
+ */
+function buildMailPausedLead({ offered, canBook }) {
+  return canBook
+    ? `Sending messages isn't available right now, but you can book a ${lengthsPhrase(offered)} call with Ayan instead.`
+    : "Sending messages isn't available right now.";
 }
 
 const MAIL_UNAVAILABLE_ANSWER =
@@ -631,10 +763,12 @@ const MAIL_CANCELLED_ANSWER = "Okay — I haven't sent anything. Let me know if 
 const MAIL_ISSUE_FAILED_ANSWER =
   "Something went wrong on my side before your message could be sent, so nothing was sent. Please try again in a moment.";
 
-/** The capabilities answer, templated from the route enum. */
-function buildCapabilitiesAnswer() {
+/** The capabilities answer, templated from the route enum and what is switched on. */
+function buildCapabilitiesAnswer({ mailEnabled = false } = {}) {
+  const describe = (route) =>
+    route === "action" && mailEnabled ? ACTION_CAPABILITY_WITH_MAIL : CAPABILITY_DESCRIPTIONS[route];
   const lines = ROUTES.filter((route) => !HIDDEN_CAPABILITIES.includes(route))
-    .map((route) => `- ${CAPABILITY_DESCRIPTIONS[route]}`)
+    .map((route) => `- ${describe(route)}`)
     .filter(Boolean);
 
   return ["Here's what I can do:", "", ...lines, "", "What would you like to know?"].join("\n");
@@ -650,6 +784,8 @@ module.exports = {
   buildDateContext,
   NO_DOCUMENTS_CONTEXT,
   REFUSAL_ANSWER,
+  REFUSAL_ANSWER_WITH_MAIL,
+  buildRefusalAnswer,
   ERROR_ANSWER,
   NOT_IMPLEMENTED_ANSWER,
   CANNED_DEAD_ENDS,
@@ -658,17 +794,26 @@ module.exports = {
   resolveExcludedTopics,
   buildScopePrompt,
   OUT_OF_SCOPE_ANSWER,
+  OUT_OF_SCOPE_ANSWER_WITH_MAIL,
+  buildOutOfScopeAnswer,
   buildTruncatedAnswer,
   AGENT_NO_ANSWER,
   CAPABILITY_DESCRIPTIONS,
+  ACTION_CAPABILITY_WITH_MAIL,
   HIDDEN_CAPABILITIES,
   buildCapabilitiesAnswer,
   GREETINGS,
   buildGreetingAnswer,
   MAIL_CAPTURE_PROMPT,
-  BOOKING_UNAVAILABLE_ANSWER,
   ACTION_CLARIFY_ANSWER,
+  TIMEZONE_NOTE,
   buildBookingAnswer,
+  buildBookingPartialAnswer,
+  BOOKING_NOT_FOUND_ANSWER,
+  BOOKING_UNREACHABLE_ANSWER,
+  BOOKING_FAILED_ANSWER,
+  buildBookingFailedAnswer,
+  buildMailPausedLead,
   MAIL_UNAVAILABLE_ANSWER,
   buildMailCapReachedAnswer,
   buildMailTooLongAnswer,

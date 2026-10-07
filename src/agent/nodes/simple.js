@@ -3,20 +3,24 @@
 // The nodes that need no model call. Each returns only the keys it changes.
 // (The last stub, `action`, was replaced by nodes/action.js in Phase 10.)
 
+const { getConfig } = require("../../config");
 const {
-  REFUSAL_ANSWER,
+  buildRefusalAnswer,
   buildCapabilitiesAnswer,
   buildGreetingAnswer,
 } = require("../prompts");
 
 /** Canned decline. The router already decided; there is nothing to ask a model. */
 async function refusal() {
-  return { finalAnswer: REFUSAL_ANSWER };
+  return { finalAnswer: buildRefusalAnswer({ mailEnabled: getConfig().mail.enabled }) };
 }
 
-/** Templated from the route enum, so it cannot drift from what the graph can do. */
+/**
+ * Templated from the route enum, so it cannot drift from what the graph can do — and from
+ * what is switched on, so a paused feature (mail, MOONMIND_MAIL_ENABLED) is not offered.
+ */
 async function listCapabilities() {
-  return { finalAnswer: buildCapabilitiesAnswer() };
+  return { finalAnswer: buildCapabilitiesAnswer({ mailEnabled: getConfig().mail.enabled }) };
 }
 
 /**

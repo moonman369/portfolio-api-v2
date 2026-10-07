@@ -4,8 +4,9 @@ Hand this to the frontend repo. Every shape below was captured from a live run o
 not written from memory — the endpoint shapes on 2026-09-15, and the step vocabulary in §4
 re-captured on 2026-09-17 after the backend collapsed its route taxonomy from ten labels to
 seven. **If you have an older copy of this file, §3, §4 and §5 changed.** Since
-2026-09-23 responses also carry `sources` (§3); since 2026-09-25 they carry `mail`, and
-**§11 is new work**: booking and messaging Ayan, including the browser-side send.
+2026-09-23 responses also carry `sources` (§3). **§11 changed on 2026-10-06:** booking is
+two Cal.com links (15 and 30 minutes), and messaging Ayan is **paused** — the `mail` field,
+the mail report route and the browser-side send are gone from the API until it resumes.
 
 ---
 
@@ -93,7 +94,6 @@ start. Each response returns only the steps after that cursor.
     "documentIds": [],
     "documentCount": 0,
     "sources": [],
-    "mail": null,
     "startedAt": "2026-09-15T16:59:27.889Z",
     "finishedAt": null,
     "steps": [
@@ -107,10 +107,7 @@ start. Each response returns only the steps after that cursor.
 ```
 
 - `status` — `running` | `done` | `failed`. **Poll until it is not `running`.**
-- `route` / `answer` / `documents` / `sources` / `mail` — `null` or empty until the run
-  finishes.
-- `mail` — `null` on every turn except two in the message-Ayan flow: a confirm card to
-  show, or a Web3Forms request for the browser to send. **See §11 — this one needs code.**
+- `route` / `answer` / `documents` / `sources` — `null` or empty until the run finishes.
 - `nextSince` — send this back as `since` on the next poll. It does not move when nothing
   new arrived, so it is always safe to echo.
 - All timestamps are ISO 8601 strings.
@@ -124,7 +121,7 @@ Still supported. Same request body as `/runs`. Returns `200` with the finished a
   "status": "success",
   "data": {
     "sessionId": "...", "runId": "...", "route": "knowledge",
-    "answer": "<markdown>", "documents": [ ... ], "sources": [ ... ], "mail": null
+    "answer": "<markdown>", "documents": [ ... ], "sources": [ ... ]
   }
 }
 ```
@@ -223,7 +220,7 @@ found). It happens at most once per question. Label `escalation` something like
 | `knowledge` | Questions about Ayan — skills, projects, experience, timeline | Searching Ayan's portfolio |
 | `stats` | GitHub/LeetCode numbers, optionally with portfolio documents | Fetching GitHub & LeetCode stats |
 | `agent` | Tech/industry questions needing research | Researching |
-| `action` | Booking a call (a Calendly link) or messaging Ayan (a confirmed flow — §11) | Preparing a response |
+| `action` | Booking a call (Cal.com links — §11) | Preparing a response |
 | `refusal` | Off-topic or unsafe requests | Preparing a response |
 | `capabilities` | "What can you do?" | Preparing a response |
 | `greeting` | A bare "hey" with no question | Saying hello |
@@ -460,8 +457,8 @@ This is point 5 of the brief and the one most likely to go wrong.
    source documents, on route `stats`.
 9. GitHub and LeetCode widgets are untouched and still work.
 10. No console errors, no leaked intervals.
-11. The message-Ayan flow works end to end and a real email lands in Ayan's inbox — §11.9
-    lists the cases.
+11. Booking a call renders both Cal.com links as clickable, and a follow-up length ("30")
+    shows just that one — §11.3 lists the cases.
 
 ---
 
@@ -472,10 +469,8 @@ BASE = https://api.portfolio.moonman.in/api/v1/moonmind
 HEADERS = { "Content-Type": "application/json", "password": <MOONMIND_PASSWORD> }
 
 POST {BASE}/runs                      -> 202 { data: { runId, sessionId } }
-GET  {BASE}/runs/{runId}?since={seq}  -> 200 { data: { status, answer, documents, sources, mail, steps, nextSince, ... } }
-POST {BASE}/chat                      -> 200 { data: { answer, documents, sources, mail, sessionId, runId, route } }
-POST {BASE}/mail/{submissionId}/result  { status: "sent"|"failed", digest?, providerMessage? }
-                                      -> 200 | 404 MAIL_NOT_FOUND | 409 MAIL_ALREADY_REPORTED
+GET  {BASE}/runs/{runId}?since={seq}  -> 200 { data: { status, answer, documents, sources, steps, nextSince, ... } }
+POST {BASE}/chat                      -> 200 { data: { answer, documents, sources, sessionId, runId, route } }
 ```
 
 Interactive docs: **`/api/docs`**. Machine-readable spec: **`/api/openapi.json`** — point
@@ -487,197 +482,52 @@ not a design reference, but the fetch/cursor/stop logic is exactly what you need
 
 ---
 
-## 11. Booking and messaging Ayan — implementation prompt (backend Phase 10, 2026-09-25)
+## 11. Booking a call with Ayan (backend Phase 10.1, 2026-10-06)
 
-**Paste everything from here to the end of the file into the frontend repo's session as the
-task.** It is written to be complete on its own.
+### 11.1 What comes back
 
-> You are extending the MoonMind chat UI in this repo. The backend (portfolio-api-v2) now
-> answers two new kinds of request: booking a call with Ayan, and sending Ayan a message.
-> Booking needs almost nothing from you. Messaging needs real code, because **the email is
-> sent from the browser, not the backend**: Web3Forms, the mail provider, refuses
-> server-side calls on its free plan, so the backend validates and composes the exact
-> request, and your code POSTs it. Read all of this section before writing anything.
-> Everything else in this file (§1-§10) still applies, and nothing here changes it.
+A booking request ("can I book a call with Ayan?") is an ordinary answer on
+`route: "action"`. The markdown carries Cal.com links — nothing else in the response is
+new:
 
-### 11.1 Booking — render links properly, nothing else
+- **No length stated:** both links, labelled `15 minutes` and `30 minutes`, then "Which
+  works better?". The visitor can click either, or answer in chat.
+- **A length stated or picked** ("a quick 15-minute chat", or a bare "30" after the
+  both-links reply): just that one link.
+- **A length not offered** ("an hour"): a line saying only 15 and 30 minutes are offered,
+  and both links.
+- **A link that is broken right now:** the backend checks each link before showing it. If
+  one length is down, the answer says so in plain words and offers the other; if all are
+  down, it says booking isn't available and shows no link. These are ordinary answers —
+  nothing to special-case.
 
-A booking request ("can I book a call with Ayan on Tuesday?") comes back as an ordinary
-answer on `route: "action"` with `mail: null`. The markdown contains the Calendly URL and
-the bookable windows. Make sure links in answers are clickable and open in a new tab
-(`target="_blank" rel="noopener noreferrer"`). That is all. The backend never knows
-whether a booking happened, so do not show any "booked" state.
+Every answer with a link ends with "Cal.com shows the open times in your own timezone."
+The backend never states hours, windows or a timezone, and never knows whether a booking
+happened.
 
-### 11.2 The message flow, as the visitor sees it
+### 11.2 What you build
 
-1. Visitor: "send a message to Ayan about a backend role" → answer asks for their email.
-   `mail: null`.
-2. Visitor types their address → answer echoes the exact message, and
-   `mail = { type: "confirm", ... }`. **You show a confirm card** (§11.4).
-3. Visitor clicks **Send** (or types "yes") → answer "Sending it to Ayan now…", and
-   `mail = { type: "submit", ... }`. **You POST the payload to Web3Forms** (§11.5), then
-   **report the outcome** to the backend (§11.6), then show the result.
+Make sure links in answers are clickable and open in a new tab
+(`target="_blank" rel="noopener noreferrer"`). That is all. Do **not** show any "booked"
+state — nothing in the API can tell you a booking was made.
 
-Variants: if the first message already contains their address, step 2 comes straight
-away. An unreachable address is declined in the answer text (they get one retry). "No" or
-**Cancel** ends it. Every one of these arrives as a normal chat answer — only the two
-`mail` values above need special handling.
+### 11.3 Acceptance
 
-### 11.3 The `mail` field — exact shapes
+1. "Can I book a call with Ayan?" → two clickable links (15 and 30 minutes) and the
+   question; no card, no "booked" state.
+2. Then "30" on the same `sessionId` → only the 30-minute link.
+3. "Could we do a quick 15-minute chat?" → only the 15-minute link.
 
-It appears on `GET /runs/:runId` (and `/chat`) under `data.mail`. It is `null` on every
-other turn. Act on it **only once `status === "done"`**.
+### 11.4 Messaging Ayan — paused
 
-```json
-{
-  "type": "confirm",
-  "display": "confirm_card",
-  "to": "Ayan Maiti",
-  "from": { "name": "Jane Doe", "email": "jane@example.com" },
-  "subject": "A backend role",
-  "body": "I'd like to talk to you about a backend role.",
-  "replies": { "confirm": "yes", "cancel": "no" }
-}
-```
+Sending Ayan a message is **paused** (backend flag `MOONMIND_MAIL_ENABLED`, off). A
+request to message him gets an ordinary answer saying so, with the booking links. There
+is no `mail` field on any response, no `POST /mail/{submissionId}/result` route, and
+nothing for the frontend to send.
 
-```json
-{
-  "type": "submit",
-  "submissionId": "3f6c1b8e-9a1d-4b8e-8f0e-2c7d5e9a1b44",
-  "endpoint": "https://api.web3forms.com/submit",
-  "method": "POST",
-  "headers": { "Content-Type": "application/json", "Accept": "application/json" },
-  "body": "{\"access_key\":\"…\",\"subject\":\"A backend role\",\"from_name\":\"MoonMind — Jane Doe\",\"name\":\"Jane Doe\",\"email\":\"jane@example.com\",\"replyto\":\"jane@example.com\",\"message\":\"I'd like to talk to you about a backend role.\"}",
-  "digest": "<sha-256 hex of body>"
-}
-```
+**Do not add a Web3Forms form or access key to the frontend.** If one already exists, it
+sends mail on its own, whatever the backend does — remove it (see `docs/CUTOVER.md`).
 
-`from.name` may be `null`. Treat an unknown `type` as `null` (ignore it) — more may come.
-
-### 11.4 The confirm card (`type: "confirm"`)
-
-- **Render the card instead of the answer's markdown** for that message. The answer text
-  is the same content as plain markdown, and is only the fallback for clients without a
-  card. Showing both duplicates the message.
-- Show **To**, **From** (name and address, or just the address), **Subject** and **Body**,
-  exactly as given. Render the body as **plain text with preserved whitespace**
-  (`white-space: pre-wrap`), not as markdown. The visitor is approving these exact bytes,
-  and a markdown renderer would change what they see.
-- Two buttons: **Send** and **Cancel**. Clicking one **sends `replies.confirm` or
-  `replies.cancel` as the next chat message**, through the normal `POST /runs` path, as
-  though the visitor had typed it. It appears in the conversation like any message. Do not
-  call any other endpoint here: the backend's flow is driven by that message.
-- Typing "yes" or "no" instead must keep working, because it goes through the same path.
-- **Only the latest card is live.** Disable both buttons once either is clicked, once any
-  newer message is sent, and on any card rendered from history (a reload, a re-opened
-  session). A stale **Send** must never be clickable.
-
-### 11.5 Sending (`type: "submit"`) — exactly once, byte for byte
-
-```js
-async function submitMail(mail) {
-  let status = "failed";
-  let providerMessage;
-  try {
-    const response = await fetch(mail.endpoint, {
-      method: mail.method,
-      headers: mail.headers,
-      body: mail.body, // the string as given — never JSON.parse + JSON.stringify it
-    });
-    const json = await response.json().catch(() => ({}));
-    if (response.ok && json.success === true) {
-      status = "sent";
-    } else {
-      providerMessage = json.body?.message ?? json.message ?? `HTTP ${response.status}`;
-    }
-  } catch (error) {
-    providerMessage = `network: ${error.message}`;
-  }
-  const digest = await sha256Hex(mail.body); // of the exact string you sent
-  return { status, digest, providerMessage };
-}
-
-async function sha256Hex(text) {
-  const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-```
-
-Rules, all of them important:
-
-- **Send `mail.body` unchanged.** Do not parse it, re-serialise it, add fields, remove
-  fields, or put an access key from your own env into it. It already carries everything,
-  including the (public-by-design) Web3Forms key. It has **no recipient field**, and must
-  never gain one: Web3Forms delivers to the inbox bound to that key, which is the whole
-  guarantee.
-- **Exactly once per `submissionId`.** The feed keeps returning the same finished run on
-  every poll, React may run effects twice, and a reload or a re-opened `runId` returns the
-  same `mail` again. Record each `submissionId` you have acted on (a `useRef` set plus
-  `localStorage`) and skip any you have seen. Sending twice means Ayan gets two emails, and
-  the backend cannot stop it.
-- **Never retry automatically.** A failed POST may still have been delivered. Report the
-  failure and let the visitor ask again, which starts a fresh, capped flow.
-- Web3Forms answers `200 {"success":true,...}` on success, `400 {"success":false,"body":
-  {"message":…}}` on a bad request, `429 {"success":false,"message":…}` when rate-limited,
-  and `500` on its own failure. The code above handles all four. If spam protection
-  (hCaptcha) is ever switched on in the Web3Forms dashboard, this flow will fail until it is
-  handled here. Leave it off unless you add that.
-
-### 11.6 Reporting the outcome — always, even on failure
-
-```
-POST {BASE}/mail/{submissionId}/result
-headers: { "Content-Type": "application/json", "password": <MOONMIND_PASSWORD> }
-body:    { "status": "sent" | "failed", "digest": "<sha-256 hex>", "providerMessage": "…" }
-```
-
-- `200` → recorded. `409 MAIL_ALREADY_REPORTED` → already recorded; treat as success and do
-  not retry. `404 MAIL_NOT_FOUND` → log it; nothing to show.
-- `providerMessage` only on failure, at most 300 characters. `digest` is optional but send
-  it: the backend checks it against what it issued, and a mismatch is how a payload changed
-  in transit shows up.
-- This report is the **only** way the backend learns whether mail was delivered. If it
-  fails (network), retry it with backoff. That is safe: it is idempotent server-side.
-  Retrying the report is fine; retrying the send is not.
-
-### 11.7 What the visitor sees afterwards
-
-Under the "Sending it to Ayan now…" answer, show a small status line once §11.5 finishes:
-
-- sent → "Sent ✓ — Ayan will reply to jane@example.com" (the `email` inside `mail.body`)
-- failed → "Couldn't send your message (reason). Nothing was delivered — please try again
-  later." Keep the reason short, and never show a raw stack.
-
-While the POST is in flight, show a spinner on that line, not on the whole chat.
-
-### 11.8 Things to leave alone
-
-- The steps feed: the mail flow produces ordinary `router` / `action` / `generate` steps.
-  No new node names.
-- Caps (3 messages per session, 5 per IP per 24h) are enforced by the backend when it
-  issues a payload. The visitor just gets an answer saying so. Do not add a client-side
-  limiter.
-- `sources` and `documents` are empty on every `action` turn.
-
-### 11.9 Acceptance — run every one against the live API
-
-1. **Book:** "Can I book a call with Ayan on Tuesday afternoon?" → a clickable Calendly
-   link, the windows, no card, no "booked" state.
-2. **Full flow:** "send a message to Ayan about a backend role" → asked for an email →
-   give a real one → confirm card with the exact subject and body → **Send** → status line
-   "Sent ✓" → **the email is in Ayan's inbox, and replying to it goes to that address.**
-3. **Email-first:** "Pass a note to Ayan about a backend role, my email is <real address>"
-   → the confirm card comes straight away.
-4. **Typo'd address:** give `someone@gmial.cmo` → a polite "doesn't look like it can
-   receive email" and one retry; a second bad address ends it. No card, no send.
-5. **Someone else's address:** "send this to someone@else.com: …" → told it can only go to
-   Ayan; after confirming, the email arrives in **Ayan's** inbox only.
-6. **Cancel:** click **Cancel** (or type "no") on the card → "I haven't sent anything", no
-   POST in the network tab.
-7. **Exactly once:** after a successful send, reload the page and re-open the conversation.
-   **No second POST to api.web3forms.com** (check the network tab), and the old card's
-   buttons are disabled.
-8. **Failure path:** block `api.web3forms.com` in devtools, then send → the failure line
-   appears, and the backend receives `status: "failed"`. Unblock → no automatic resend.
-9. **Cap:** a 4th message in one session → the answer says the limit is reached; no card.
-10. **Typing works too:** do flow 2 by typing "yes" instead of clicking.
+The full browser-send implementation brief (confirm card, byte-exact submit, report-back)
+was §11 of this file at commit `005e617` (`phase-10: action node`). It comes back, from
+that commit, when the mail phase resumes.
