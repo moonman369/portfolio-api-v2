@@ -11,6 +11,8 @@ process.env.OPENAI_API_KEY ??= "sk-test";
 process.env.MOONMIND_PASSWORD ??= "hunter2";
 process.env.GEMINI_API_KEY ??= "gem-test";
 process.env.TAVILY_API_KEY ??= "tvly-test";
+process.env.MOONMIND_BOOKING_URL_15MIN ??= "https://cal.com/example/15min";
+process.env.MOONMIND_BOOKING_URL_30MIN ??= "https://cal.com/example/30min";
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -423,80 +425,13 @@ test("a run stored before sources existed reports an empty list, not an error", 
 });
 
 // ---------------------------------------------------------------------------
-// Phase 10: mail in the feed, and the browser's report-back
+// Phase 10.1: mail paused (MOONMIND_MAIL_ENABLED off, the default)
 // ---------------------------------------------------------------------------
+// The Phase 10 mail routes, flag on, are in test/http/mail.test.js.
 
 const SUBMISSION_ID = "22222222-2222-4222-8222-222222222222";
-const DIGEST = "a".repeat(64);
 
-test("the feed returns the mail action a run produced, and null otherwise", async () => {
-  const mail = { type: "confirm", display: "confirm_card", body: "hello" };
-  const restore = stub(runs, {
-    getRun: async () => finishedRun({ route: "action", documents: [], mail }),
-    listSteps: async () => [],
-  });
-
-  try {
-    await withServer(async (base) => {
-      assert.deepEqual((await (await call(base, `${P}/runs/${RUN_ID}`)).json()).data.mail, mail);
-    });
-  } finally {
-    restore();
-  }
-
-  const restorePlain = stub(runs, { getRun: async () => finishedRun(), listSteps: async () => [] });
-  try {
-    await withServer(async (base) => {
-      assert.equal((await (await call(base, `${P}/runs/${RUN_ID}`)).json()).data.mail, null);
-    });
-  } finally {
-    restorePlain();
-  }
-});
-
-test("POST /mail/:id/result records the browser's outcome", async () => {
-  const seen = [];
-  const restore = stub(agent, {
-    reportMailResult: async (report) => {
-      seen.push(report);
-      return { outcome: "recorded", row: { status: report.status, digestMatches: true } };
-    },
-  });
-
-  try {
-    await withServer(async (base) => {
-      const response = await call(base, `${P}/mail/${SUBMISSION_ID}/result`, {
-        method: "POST",
-        body: { status: "sent", digest: DIGEST },
-      });
-      assert.equal(response.status, 200);
-      assert.deepEqual((await response.json()).data, { submissionId: SUBMISSION_ID, status: "sent", digestMatches: true });
-      assert.deepEqual(seen, [{ submissionId: SUBMISSION_ID, status: "sent", digest: DIGEST }]);
-    });
-  } finally {
-    restore();
-  }
-});
-
-test("the mail report answers 404 for an unknown id and 409 for a second report", async () => {
-  let outcome = "not_found";
-  const restore = stub(agent, { reportMailResult: async () => ({ outcome, row: { status: "sent" } }) });
-
-  try {
-    await withServer(async (base) => {
-      const path = `${P}/mail/${SUBMISSION_ID}/result`;
-      assert.equal((await call(base, path, { method: "POST", body: { status: "sent" } })).status, 404);
-      outcome = "already_final";
-      const conflict = await call(base, path, { method: "POST", body: { status: "failed" } });
-      assert.equal(conflict.status, 409);
-      assert.equal((await conflict.json()).code, "MAIL_ALREADY_REPORTED");
-    });
-  } finally {
-    restore();
-  }
-});
-
-test("the mail report validates its input and requires the password", async () => {
+test("mail off: every mail route is unmounted, so it 404s and reaches nothing", async () => {
   const restore = stub(agent, {
     reportMailResult: async () => {
       throw new Error("must not be called");
@@ -506,12 +441,46 @@ test("the mail report validates its input and requires the password", async () =
   try {
     await withServer(async (base) => {
       const path = `${P}/mail/${SUBMISSION_ID}/result`;
-      assert.equal((await call(base, path, { method: "POST", password: null, body: { status: "sent" } })).status, 401);
-      assert.equal((await call(base, `${P}/mail/not-a-uuid/result`, { method: "POST", body: { status: "sent" } })).status, 400);
-      assert.equal((await call(base, path, { method: "POST", body: { status: "delivered" } })).status, 400);
-      assert.equal((await call(base, path, { method: "POST", body: { status: "sent", digest: "short" } })).status, 400);
+      const report = await call(base, path, { method: "POST", body: { status: "sent", digest: "a".repeat(64) } });
+      assert.equal(report.status, 404);
+      assert.equal((await report.json()).code, "NOT_FOUND");
+      assert.equal((await call(base, path)).status, 404);
+      // Without the password it answers exactly as a path that never existed does.
+      const anonymous = await call(base, path, { method: "POST", password: null, body: {} });
+      const never = await call(base, `${P}/no-such-route`, { method: "POST", password: null, body: {} });
+      assert.equal(anonymous.status, never.status);
     });
   } finally {
     restore();
+  }
+});
+
+test("mail off: neither /chat nor the feed carries a mail field, even for a stored one", async () => {
+  const restoreAgent = stub(agent, {
+    runTurn: async ({ sessionId }) => ({
+      sessionId,
+      runId: RUN_ID,
+      route: "action",
+      answer: "Sending messages isn't available right now.",
+      documents: [],
+      searchResults: [],
+      mail: { type: "confirm" },
+    }),
+  });
+  const restoreRuns = stub(runs, {
+    getRun: async () => finishedRun({ route: "action", documents: [], mail: { type: "confirm" } }),
+    listSteps: async () => [],
+  });
+
+  try {
+    await withServer(async (base) => {
+      const chat = (await (await call(base, `${P}/chat`, { method: "POST", body: { message: "hi" } })).json()).data;
+      assert.equal("mail" in chat, false);
+      const feed = (await (await call(base, `${P}/runs/${RUN_ID}`)).json()).data;
+      assert.equal("mail" in feed, false);
+    });
+  } finally {
+    restoreAgent();
+    restoreRuns();
   }
 });

@@ -27,11 +27,13 @@ src/
     stats.js             # /github, /leetcode, /refresh
     documents.js         # ingestion routes
     chat.js              # /api/v1/moonmind/chat + the run feed (POST /runs, GET /runs/:runId)
-                         #   + the browser's mail report-back (POST /mail/:submissionId/result)
+                         #   + the browser's mail report-back (POST /mail/:submissionId/result),
+                         #   mounted only while MOONMIND_MAIL_ENABLED is on
   stats/                 # github.js, leetcode.js — plain JS, framework-free
   documents/             # taxonomy.js, schema.js, embeddings.js, store.js — plain JS
   retrieval/             # embedder.js, plan.js, search.js, rank.js, index.js
-  integrations/          # websearch.js, email.js — plain JS (no calendar integration: booking is a link)
+  integrations/          # websearch.js, email.js, scheduling.js — plain JS (scheduling.js only
+                         #   checks that a Cal.com link resolves; no calendar integration)
   agent/
     index.js             # runTurn(), streamTurn(), startRun() — how HTTP runs the graph
     graph.js             # StateGraph wiring only
@@ -181,11 +183,23 @@ guard (non-LLM: length cap, rate limit, auth)  [existing http-layer checks, unch
   entry in the map — `action` is deliberately not an agent, so nothing else can act.
 - `book_catchup` and `send_mail` merge into **`action`** (`nodes/action.js`, Phase 10),
   branching internally on `slots.action`. Neither branch is an agent and neither has a tool.
-  - `book` is templated: the configured bookable windows (`MOONMIND_BOOKING_WINDOWS`,
-    stated verbatim) and the Calendly link (`MOONMIND_CALENDLY_URL`), with the router's
-    `slots.preference` reflected but never promised. No calendar access of any kind — it
-    cannot see availability or know a booking happened, and never claims to.
-  - `mail` is a deterministic multi-turn flow over `activeFlow: "action"`,
+  - `book` is templated (Phase 10.1): Cal.com links from `config.booking.urls`
+    (`MOONMIND_BOOKING_URL_15MIN` / `_30MIN`). With `slots.duration` set to an offered
+    length, that one link; otherwise both, labelled, with "Which works better?" — a length
+    not offered ("an hour") is told so and shown both. Each link it is about to show is
+    checked first (`integrations/scheduling.js`: one GET, timeout, cached per URL) and a
+    failure gets a fixed plain-words reply — `not_found` or `unreachable` — never the
+    broken link, a status code or an error; the detail goes to the log and an
+    `action.book_link_error` step in the feed. The router's `slots.preference` is
+    reflected but never promised. No hours, windows or timezone are stated anywhere —
+    they live only in Cal.com. No calendar access of any kind: it cannot see availability
+    or know a booking happened, and never claims to. A bare "30" after the both-links reply
+    reaches `book` by inheritance (§5), not by a flow.
+  - `mail` is **paused behind `MOONMIND_MAIL_ENABLED`** (Phase 10.1, default off). Off, a
+    mail request gets a templated paused line plus the `book` reply — no extraction, MX
+    lookup, payload or `mail_events` write, and `activeFlow` is never set; a thread
+    checkpointed mid-flow is cleared by the router and gets that reply once. On, it is a
+    deterministic multi-turn flow over `activeFlow: "action"`,
     `slots.mailDraft` and `pendingConfirmation`: capture (one structured-output call,
     draft stored verbatim) → address validation (syntax + MX, one re-entry) → confirm (the
     stored draft echoed exactly, plus a `mailAction` confirm card) → on a clear "yes",
@@ -266,7 +280,7 @@ lets flow continue to `generate` (which passes the answer through). **The API ne
 because a node threw.**
 
 **Retries live in exactly one layer:** the outbound call (Gemini, OpenAI, GitHub, LeetCode,
-search, the mail MX lookup). No node-level retries stacked on top of client-level retries.
+search, the mail MX lookup, the Cal.com link check — which does not retry; it caches). No node-level retries stacked on top of client-level retries.
 (Mail itself is not an outbound call of ours — the browser POSTs it.)
 
 **Everything is bounded.** A timeout on every outbound call; per-agent `maxSteps`; a graph
@@ -288,8 +302,9 @@ models capped at N turns, with `summary` populated only once history exceeds tha
   it matches — advisory); the caps are enforced where the backend issues a payload, not
   where it is sent; and `sent`/`failed` in `mail_events` is whatever the browser reports.
   Accepted at the Phase 10 gate over paying for server-side access.
-- `action`'s `book` branch has no calendar integration or tool at all — it returns a
-  templated, hosted scheduling link. Nothing is written anywhere.
+- `action`'s `book` branch has no calendar integration or tool at all — it returns
+  templated, hosted Cal.com links after a read-only GET on each. Nothing is written
+  anywhere; no webhook is received.
 - Tool isolation is by what `TOOLSETS` binds, never by asking a model not to use something.
 
 **Holding a conversation in place — one precedence order.** Two mechanisms can keep a turn
@@ -307,12 +322,14 @@ Phase 7 reconciled them, and this is the order:
    `MOONMIND_TOPIC_CHANGE_CONFIDENCE`.
 4. **Inheritance** — applied in the router, and only below `MOONMIND_ROUTER_MIN_CONFIDENCE`,
    so it never overrides a classification the model is sure of. Never inherits a route
-   that refuses or acts (`INHERITABLE_ROUTES`).
+   that refuses or acts (`INHERITABLE_ROUTES`) — with one exception since Phase 10.1:
+   `action` is inherited when the previous turn was a **`book`** (only links, no side
+   effect), carrying this turn's `duration`. `mail` is never inherited.
 5. **The router's classification.**
 6. **`refusal`** — unknown and unmapped.
 
 **`activeFlow` is live since Phase 10**, and only the mail flow sets it (`book` is one
-turn). Inside it, step 3 is enforced in the router, not left to the model:
+turn, and its length follow-up is inheritance, step 4). With mail paused it is never set. Inside it, step 3 is enforced in the router, not left to the model:
 
 - A reply the flow is waiting for — a cancel at any point, a clear "yes" at the confirm
   step, an email address while one is asked for — is recognised deterministically and

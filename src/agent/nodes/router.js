@@ -6,6 +6,8 @@
 // flow (Phase 10): a reply the flow is waiting for is held without a model call, and a
 // confident change of subject ends the flow here, clearing `activeFlow` and
 // `pendingConfirmation` so a later "yes" can never send a draft the visitor walked away from.
+// While mail is paused (Phase 10.1, MOONMIND_MAIL_ENABLED off) a thread still holding mail
+// state from before is sent to `action` once, with that state cleared, for the paused reply.
 
 const { z } = require("zod");
 const { HumanMessage, SystemMessage } = require("@langchain/core/messages");
@@ -19,7 +21,7 @@ const {
   restoreLegacySlots,
 } = require("../state");
 const { ROUTER_SYSTEM_PROMPT, buildRouterContext, CANNED_DEAD_ENDS } = require("../prompts");
-const { inMailFlow, isMailFlowReply } = require("./action");
+const { inMailFlow, isMailFlowReply, hasMailState } = require("./action");
 
 // Flat on purpose: models fill a flat object far more reliably than a nested one.
 // `which`, `withDocuments` and `action` are lifted into `slots` before they reach state.
@@ -36,11 +38,27 @@ const RouterOutputSchema = z.object({
   // A day or time the visitor asked to book ("Tuesday afternoon"). Only ever echoed back
   // as their own words — `book` never promises it.
   preference: z.string().nullable(),
+  // The meeting length the visitor asked for, in minutes (Phase 10.1). Any length, not
+  // just the offered ones: "an hour" has to arrive as 60 so `book` can say it isn't
+  // offered. Which lengths ARE offered is config (`booking.urls`), not this schema.
+  duration: z.number().int().nullable(),
   cancelsActiveFlow: z.boolean(),
 });
 
 // A preference is echoed into the answer, so it is kept short.
 const PREFERENCE_MAX_CHARS = 60;
+
+// A "preference" that is only a meeting length ("15", "30 min", "half an hour", "the
+// shorter one") is `duration` misfiled. Measured: a bare "15" came back with
+// preference "15", and the reply read "You mentioned 15 — pick an open time…".
+const LENGTH_ONLY =
+  /^(?:\d+|an?|one|half an?|the (?:short|long)(?:er|est)? one)(?:\s*-?\s*(?:m|mins?|minutes?|h|hrs?|hours?))?(?:\s+please)?[.!]*$/i;
+
+/** The visitor's stated day or time, trimmed and bounded — or "" when there is none. */
+function toPreference(value) {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  return LENGTH_ONLY.test(trimmed) ? "" : trimmed.slice(0, PREFERENCE_MAX_CHARS);
+}
 
 // Where an unusable classification lands. knowledge is the safe default: it is the most
 // common intent, it is grounded in retrieved documents, and it cannot cause a side
@@ -48,7 +66,12 @@ const PREFERENCE_MAX_CHARS = 60;
 // MoonMind never answers with a generic refusal.
 const LOW_CONFIDENCE_ROUTE = "knowledge";
 
-function toSlots({ route, which, withDocuments, action, preference }) {
+/** A usable length in minutes, or null. */
+function toDuration(value) {
+  return Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function toSlots({ route, which, withDocuments, action, preference, duration }) {
   // Each slot is dropped everywhere it is meaningless, so a stray value from the model
   // cannot influence a node that has no business reading it.
   const slots = {};
@@ -60,11 +83,29 @@ function toSlots({ route, which, withDocuments, action, preference }) {
   if (route === "action" && action) {
     slots.action = action;
   }
-  const trimmed = typeof preference === "string" ? preference.trim() : "";
-  if (route === "action" && action === "book" && trimmed) {
-    slots.preference = trimmed.slice(0, PREFERENCE_MAX_CHARS);
+  const stated = toPreference(preference);
+  if (route === "action" && action === "book" && stated) {
+    slots.preference = stated;
+  }
+  if (route === "action" && action === "book" && toDuration(duration)) {
+    slots.duration = toDuration(duration);
   }
 
+  return slots;
+}
+
+/**
+ * The slots for a turn that continues a booking: "30" after the reply that offered 15 and
+ * 30. Always `book`, with whatever length the model heard this turn — kept even when the
+ * model labelled the bare message something else, which is exactly when the turn arrives
+ * here by inheritance — and the earlier turn's preference, unless this one states its own.
+ */
+function bookingFollowUpSlots(output, previousSlots) {
+  const slots = { action: "book" };
+  const duration = toDuration(output.duration);
+  const preference = toPreference(output.preference) || previousSlots?.preference;
+  if (duration) slots.duration = duration;
+  if (preference) slots.preference = preference;
   return slots;
 }
 
@@ -94,12 +135,18 @@ function holdMailFlow(state, confidence, cancelsActiveFlow = false) {
  * confidence 1.00, which no floor catches; the conversation context and the prompt rules
  * are what address that. This is the safety net under them, not the fix.
  */
-function applyConfidenceFloor(route, confidence, minConfidence, previousRoute, cancelled) {
+function applyConfidenceFloor(route, confidence, minConfidence, previousRoute, cancelled, continuesBooking = false) {
   if (confidence >= minConfidence) {
     return route;
   }
   if (cancelled) {
     return LOW_CONFIDENCE_ROUTE;
+  }
+  // `action` is never inherited — except its `book` half, which only hands out links and
+  // so cannot cause a side effect by being guessed. That is what lets a bare "30" after
+  // the both-links reply get the 30-minute link without holding a flow open.
+  if (continuesBooking) {
+    return "action";
   }
   return INHERITABLE_ROUTES.includes(previousRoute) ? previousRoute : LOW_CONFIDENCE_ROUTE;
 }
@@ -159,10 +206,11 @@ function splitForRouter(messages) {
 /**
  * @param {object} [deps]
  * @param {object} [deps.model] Injected model; tests pass a fake with withStructuredOutput.
+ * @param {object} [deps.config] Injected config; tests pass one to switch mail on or off.
  */
 function createRouterNode(deps = {}) {
   return async function router(state) {
-    const { moonmind } = getConfig();
+    const { moonmind, mail } = deps.config ?? getConfig();
     const model = deps.model ?? getModel("router");
 
     // The router's window is its own, but it can never exceed the conversation cap the
@@ -179,6 +227,19 @@ function createRouterNode(deps = {}) {
     // Those are recognised deterministically and never reach the model: a bare "yes"
     // classified cold is a greeting at confidence 1.0, which would read as a topic change
     // and walk out of the flow with the visitor's confirmation in hand.
+    //
+    // With mail paused, a thread checkpointed mid-flow is not resumed: it goes to `action`
+    // once, every piece of mail state cleared here, and gets the paused reply. Nothing from
+    // the old draft can be sent — the draft does not survive this return.
+    if (!mail.enabled && hasMailState(state)) {
+      return {
+        route: "action",
+        routeConfidence: 1,
+        slots: { action: "mail" },
+        activeFlow: null,
+        pendingConfirmation: null,
+      };
+    }
     const mailFlow = inMailFlow(state);
     if (mailFlow && isMailFlowReply(current, state)) {
       return holdMailFlow(state, 1);
@@ -190,6 +251,9 @@ function createRouterNode(deps = {}) {
     // inheritance, or every pre-Phase-7 thread silently loses both.
     const rawPreviousRoute = state.previousRoute ?? null;
     const previousRoute = resolveLegacyRoute(rawPreviousRoute);
+    // The last turn answered a booking request. `slots` persists across turns, so this is
+    // the slot that turn ended with — `book`, never `mail`, which is never inherited.
+    const continuesBooking = previousRoute === "action" && state.slots?.action === "book";
     const context = buildRouterContext({ turns, previousRoute });
 
     const messages = [
@@ -217,16 +281,18 @@ function createRouterNode(deps = {}) {
       }
       // Confidence 0 through the same rule the unsure path uses, so a failed
       // classification mid-exchange continues that exchange rather than resetting it.
+      const route = applyConfidenceFloor(
+        LOW_CONFIDENCE_ROUTE,
+        0,
+        moonmind.routerMinConfidence,
+        previousRoute,
+        false,
+        continuesBooking,
+      );
       return {
-        route: applyConfidenceFloor(
-          LOW_CONFIDENCE_ROUTE,
-          0,
-          moonmind.routerMinConfidence,
-          previousRoute,
-          false,
-        ),
+        route,
         routeConfidence: 0,
-        slots: {},
+        slots: route === "action" ? bookingFollowUpSlots({}, state.slots) : {},
       };
     }
 
@@ -251,6 +317,7 @@ function createRouterNode(deps = {}) {
       moonmind.routerMinConfidence,
       previousRoute,
       output.cancelsActiveFlow === true,
+      continuesBooking,
     );
 
     // When the classification was confident, the model's `withDocuments` is the answer —
@@ -258,10 +325,15 @@ function createRouterNode(deps = {}) {
     // a thread that was mid mixed-stats question under the old taxonomy need its slot
     // handed back, since nothing this turn expressed a view on it.
     const inherited = output.confidence < moonmind.routerMinConfidence;
-    const slots =
+    let slots =
       inherited && route === "stats"
         ? restoreLegacySlots(rawPreviousRoute, toSlots(output))
         : toSlots(output);
+    // A booking follow-up — inherited, classified `action` without saying which half, or
+    // `book` without restating the preference — carries on as the same booking.
+    if (route === "action" && continuesBooking && (inherited || output.action !== "mail")) {
+      slots = bookingFollowUpSlots(output, state.slots);
+    }
 
     return {
       route,

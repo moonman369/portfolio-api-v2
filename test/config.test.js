@@ -15,6 +15,8 @@ const MINIMAL_ENV = Object.freeze({
   MOONMIND_PASSWORD: "test-password",
   GEMINI_API_KEY: "gem-test-not-used",
   TAVILY_API_KEY: "tvly-test-not-used",
+  MOONMIND_BOOKING_URL_15MIN: "https://cal.com/example/15min",
+  MOONMIND_BOOKING_URL_30MIN: "https://cal.com/example/30min",
 });
 
 function envWith(overrides) {
@@ -56,6 +58,8 @@ test("fails when a required variable is missing, naming every offender", () => {
       assert.match(error.message, /MOONMIND_PASSWORD/);
       assert.match(error.message, /GEMINI_API_KEY/);
       assert.match(error.message, /TAVILY_API_KEY/);
+      assert.match(error.message, /MOONMIND_BOOKING_URL_15MIN/);
+      assert.match(error.message, /MOONMIND_BOOKING_URL_30MIN/);
       return true;
     },
   );
@@ -158,4 +162,49 @@ test("MONGO_DNS_SERVERS is empty by default and parsed as a list when set", () =
 
   const overridden = loadConfig(envWith({ MONGO_DNS_SERVERS: "8.8.8.8, 1.1.1.1 ,," }));
   assert.deepEqual(overridden.mongo.dnsServers, ["8.8.8.8", "1.1.1.1"]);
+});
+
+// ---------------------------------------------------------------------------
+// Booking links and the mail flag (Phase 10.1)
+// ---------------------------------------------------------------------------
+
+test("the booking links are one map keyed by length, with the check's defaults", () => {
+  const { booking } = loadConfig(MINIMAL_ENV);
+
+  assert.deepEqual(booking.urls, {
+    15: "https://cal.com/example/15min",
+    30: "https://cal.com/example/30min",
+  });
+  assert.equal(booking.checkTimeoutMs, 3000);
+  assert.equal(booking.checkCacheMs, 5 * 60 * 1000);
+});
+
+test("a booking link must be https", () => {
+  assert.throws(
+    () => loadConfig(envWith({ MOONMIND_BOOKING_URL_30MIN: "http://cal.com/example/30min" })),
+    /MOONMIND_BOOKING_URL_30MIN: must be an https URL/,
+  );
+  assert.throws(() => loadConfig(envWith({ MOONMIND_BOOKING_URL_15MIN: "not a url" })), /MOONMIND_BOOKING_URL_15MIN/);
+});
+
+test("mail is off by default, and boots without a Web3Forms key", () => {
+  const config = loadConfig(MINIMAL_ENV);
+
+  assert.equal(config.mail.enabled, false);
+  assert.equal(config.mail.accessKey, null);
+});
+
+test("mail switched on without a Web3Forms key fails the boot, naming the key", () => {
+  assert.throws(
+    () => loadConfig(envWith({ MOONMIND_MAIL_ENABLED: "true" })),
+    (error) => {
+      assert.match(error.message, /Invalid environment configuration/);
+      assert.match(error.message, /WEB3FORMS_ACCESS_KEY: Required when MOONMIND_MAIL_ENABLED is on/);
+      return true;
+    },
+  );
+
+  const on = loadConfig(envWith({ MOONMIND_MAIL_ENABLED: "true", WEB3FORMS_ACCESS_KEY: "public-key" }));
+  assert.equal(on.mail.enabled, true);
+  assert.equal(on.mail.accessKey, "public-key");
 });

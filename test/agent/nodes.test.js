@@ -11,6 +11,8 @@ process.env.OPENAI_API_KEY ??= "sk-test-not-used";
 process.env.MOONMIND_PASSWORD ??= "test-password";
 process.env.GEMINI_API_KEY ??= "gem-test-not-used";
 process.env.TAVILY_API_KEY ??= "tvly-test";
+process.env.MOONMIND_BOOKING_URL_15MIN ??= "https://cal.com/example/15min";
+process.env.MOONMIND_BOOKING_URL_30MIN ??= "https://cal.com/example/30min";
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -239,6 +241,8 @@ test("capabilities is templated from the route enum", async () => {
 
   assert.ok(finalAnswer.includes("GitHub"), "mentions stats");
   assert.ok(finalAnswer.includes("book time"), "mentions booking");
+  // Not advertised for now (2026-10-06) — the frontend's mail send is not built yet.
+  assert.doesNotMatch(finalAnswer, /message|mail/i, "mail is not offered");
   // One bullet per advertised route: every route except the hidden ones.
   const bullets = finalAnswer.split("\n").filter((line) => line.startsWith("- "));
   assert.equal(bullets.length, ROUTES.length - HIDDEN_CAPABILITIES.length);

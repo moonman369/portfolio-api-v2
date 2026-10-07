@@ -2,10 +2,18 @@
 
 // The action node (Phase 10): reach Ayan, two ways, neither of them an agent.
 //
-//   book — a templated answer: the configured bookable windows and the Calendly link.
-//          No model call, no tool, no calendar access. It cannot know his availability or
-//          whether a booking happened, and never says otherwise.
-//   mail — a small state machine over `activeFlow: "action"`, `slots.mailDraft` and
+//   book — Cal.com links, one per meeting length (Phase 10.1): the length asked for, or
+//          all of them labelled when none was. No model call, no tool, no calendar access.
+//          Its one outbound call is a GET on each link it is about to show
+//          (integrations/scheduling.js), so a broken link is explained instead of handed
+//          out. It cannot know his availability or whether a booking happened, and never
+//          says otherwise. Hours and timezone live only in Cal.com.
+//   mail — PAUSED behind MOONMIND_MAIL_ENABLED (Phase 10.1). Off, a mail request gets a
+//          templated reply and the booking links: no extraction, no MX lookup, no payload,
+//          no `mail_events` write, no flow. On, it is the flow below — flag-gated on
+//          purpose, not dead code.
+//
+//          A small state machine over `activeFlow: "action"`, `slots.mailDraft` and
 //          `pendingConfirmation`:
 //
 //            capture  → one structured-output call turns the request into a draft,
@@ -24,15 +32,19 @@
 const crypto = require("node:crypto");
 const { z } = require("zod");
 const { SystemMessage, HumanMessage } = require("@langchain/core/messages");
+const { RunnableLambda } = require("@langchain/core/runnables");
 const { getConfig } = require("../../config");
 const { getModel } = require("../models");
 const { resolveLegacyRoute } = require("../state");
 const email = require("../../integrations/email");
+const scheduling = require("../../integrations/scheduling");
 const {
   MAIL_CAPTURE_PROMPT,
-  BOOKING_UNAVAILABLE_ANSWER,
   ACTION_CLARIFY_ANSWER,
   buildBookingAnswer,
+  buildBookingPartialAnswer,
+  buildBookingFailedAnswer,
+  buildMailPausedLead,
   MAIL_UNAVAILABLE_ANSWER,
   buildMailCapReachedAnswer,
   buildMailTooLongAnswer,
@@ -69,6 +81,19 @@ function inMailFlow(state) {
   return (
     resolveLegacyRoute(state?.activeFlow) === "action" &&
     state?.slots?.action === "mail" &&
+    Boolean(state?.slots?.mailDraft)
+  );
+}
+
+/**
+ * Does this thread hold ANY mail state — the flow, a pending confirmation, or a draft?
+ * Wider than `inMailFlow` on purpose: while mail is paused, every one of them is cleared,
+ * whatever shape a thread checkpointed before the pause left them in.
+ */
+function hasMailState(state) {
+  return (
+    resolveLegacyRoute(state?.activeFlow) === "action" ||
+    state?.pendingConfirmation?.kind === "mail" ||
     Boolean(state?.slots?.mailDraft)
   );
 }
@@ -131,12 +156,125 @@ function holdFlow(draft, extra) {
 
 /**
  * @param {object} [deps] Injected for tests: `model` (capture), `config`, `validate`
- *   (address validator), `store` ({ capReached, recordMailEvent }), `newId`.
+ *   (address validator), `store` ({ capReached, recordMailEvent }), `newId`,
+ *   `checkLink` (the booking-link check).
  */
 function createActionNode(deps = {}) {
   const validate = deps.validate ?? email.validateAddress;
   const store = deps.store ?? email;
   const newId = deps.newId ?? (() => crypto.randomUUID());
+  const checkLink = deps.checkLink ?? scheduling.checkBookingLink;
+
+  // ---- book ---------------------------------------------------------------
+
+  /** The check never fails the turn: anything it throws is just an unreachable link. */
+  async function checkSafely(url) {
+    try {
+      return await checkLink(url);
+    } catch (error) {
+      return { outcome: "unreachable", httpStatus: null, errorCode: error?.code ?? error?.name ?? "THROWN" };
+    }
+  }
+
+  /**
+   * A link that failed its check, recorded where Ayan can see what broke: the server log,
+   * and an `action.book_link_error` step in the run feed — a named sub-step is how a node
+   * opts into the feed (agent/index.js, `stepLabel`). The detail stays here; the visitor
+   * only ever sees plain words.
+   */
+  async function reportLinkError({ minutes, url, result }, state, runConfig) {
+    const detail = {
+      runId: runConfig?.configurable?.runId ?? null,
+      sessionId: state.sessionId ?? null,
+      minutes,
+      url,
+      outcome: result.outcome,
+      httpStatus: result.httpStatus ?? null,
+      errorCode: result.errorCode ?? null,
+    };
+    console.warn("agent.action.book_link_error", detail);
+
+    const message = `${minutes}min ${detail.outcome} status=${detail.httpStatus ?? "none"} code=${detail.errorCode ?? "none"} ${url}`;
+    try {
+      await RunnableLambda.from(() => ({ error: { message } }))
+        .withConfig({ runName: "action.book_link_error" })
+        .invoke(null, runConfig);
+    } catch (error) {
+      console.warn("agent.action.book_link_error_unrecorded", { message: error?.message });
+    }
+  }
+
+  /**
+   * The booking reply. Checks only the link(s) it is about to show — plus, when the one
+   * length asked for is down, the others it would offer instead — and answers from a fixed
+   * template per case. `lead({ offered, canBook })` builds a line to go in front (the
+   * paused-mail line), told whether any link survived so it never offers what fails.
+   */
+  async function book(state, runConfig, config, { lead = null } = {}) {
+    const { urls } = config.booking;
+    const offered = Object.keys(urls)
+      .map(Number)
+      .sort((a, b) => a - b);
+    const slots = state.slots ?? {};
+    const requested = slots.duration ?? null;
+    const asked = offered.includes(requested) ? requested : null;
+    const unsupported = requested !== null && asked === null ? requested : null;
+    const preference = slots.preference ?? null;
+
+    const results = new Map();
+    const check = async (minutes) => {
+      const result = await checkSafely(urls[minutes]);
+      results.set(minutes, result);
+      if (result.outcome !== "ok") {
+        await reportLinkError({ minutes, url: urls[minutes], result }, state, runConfig);
+      }
+    };
+    const isOk = (minutes) => results.get(minutes)?.outcome === "ok";
+    const toLink = (minutes) => ({ minutes, url: urls[minutes] });
+
+    const shown = asked ? [asked] : offered;
+    await Promise.all(shown.map(check));
+
+    let considered = shown;
+    if (asked && !isOk(asked)) {
+      // The length asked for is down: the others are what can be offered instead.
+      const others = offered.filter((minutes) => minutes !== asked);
+      await Promise.all(others.map(check));
+      considered = [asked, ...others];
+    }
+
+    const working = considered.filter(isOk);
+    const broken = considered.filter((minutes) => !isOk(minutes));
+
+    let answer;
+    if (broken.length === 0) {
+      answer = buildBookingAnswer({ links: working.map(toLink), offered, unsupported, preference });
+    } else if (working.length === 0) {
+      answer = buildBookingFailedAnswer(broken.map((minutes) => results.get(minutes).outcome));
+    } else {
+      answer = buildBookingPartialAnswer({
+        broken: broken.map((minutes) => ({ minutes, outcome: results.get(minutes).outcome })),
+        working: working.map(toLink),
+        askedForBroken: asked !== null,
+        preference,
+      });
+    }
+
+    const head = lead ? lead({ offered, canBook: working.length > 0 }) : null;
+    return { finalAnswer: head ? `${head}\n\n${answer}` : answer };
+  }
+
+  /**
+   * Mail while it is paused: the paused line and the booking links, nothing else. Every
+   * piece of mail state is cleared — a thread checkpointed mid-flow gets this once and is
+   * free — and the turn ends as a booking, so "30" next can pick a length.
+   */
+  async function mailPaused(state, runConfig, config) {
+    const reply = await book({ ...state, slots: {} }, runConfig, config, { lead: buildMailPausedLead });
+    return { ...reply, activeFlow: null, pendingConfirmation: null, slots: { action: "book" } };
+  }
+
+  // ---- mail ---------------------------------------------------------------
 
   async function capture(text, ctx) {
     const { config, sessionId, ipHash, runConfig } = ctx;
@@ -317,17 +455,20 @@ function createActionNode(deps = {}) {
     const config = deps.config ?? getConfig();
     const slots = state.slots ?? {};
 
+    if (!config.mail.enabled) {
+      if (slots.action === "mail" || hasMailState(state)) {
+        return mailPaused(state, runConfig, config);
+      }
+      // Booking is the only way left to reach him, so an unclear request gets the links
+      // rather than a question offering something that is switched off.
+      return book(state, runConfig, config);
+    }
+
     if (slots.action === "mail" || inMailFlow(state)) {
       return mail(state, runConfig, config);
     }
     if (slots.action === "book") {
-      const { calendlyUrl, bookingWindows } = config.action;
-      return {
-        finalAnswer:
-          calendlyUrl && bookingWindows
-            ? buildBookingAnswer({ calendlyUrl, bookingWindows, preference: slots.preference ?? null })
-            : BOOKING_UNAVAILABLE_ANSWER,
-      };
+      return book(state, runConfig, config);
     }
     return { finalAnswer: ACTION_CLARIFY_ANSWER };
   };
@@ -335,6 +476,7 @@ function createActionNode(deps = {}) {
 
 module.exports = {
   createActionNode,
+  hasMailState,
   inMailFlow,
   isMailFlowReply,
   isDestination,

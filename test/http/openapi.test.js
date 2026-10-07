@@ -16,6 +16,8 @@ process.env.OPENAI_API_KEY ??= "sk-test";
 process.env.MOONMIND_PASSWORD ??= "pw";
 process.env.GEMINI_API_KEY ??= "gem-test";
 process.env.TAVILY_API_KEY ??= "tvly-test";
+process.env.MOONMIND_BOOKING_URL_15MIN ??= "https://cal.com/example/15min";
+process.env.MOONMIND_BOOKING_URL_30MIN ??= "https://cal.com/example/30min";
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -185,4 +187,15 @@ test("the root route points at the docs", async () => {
     const body = await (await fetch(base)).json();
     assert.equal(body.docs, "/api/docs");
   });
+});
+
+test("mail off (the default): nothing mail-shaped is documented", () => {
+  const paths = Object.keys(spec.paths).filter((path) => /mail/i.test(path));
+  const schemas = Object.keys(spec.components.schemas).filter((name) => /mail/i.test(name));
+
+  assert.deepEqual(paths, []);
+  assert.deepEqual(schemas, []);
+  assert.equal("mail" in spec.components.schemas.ChatResponse.properties.data.properties, false);
+  assert.equal("mail" in spec.components.schemas.RunFeed.properties.data.properties, false);
+  assert.doesNotMatch(JSON.stringify(spec), /web3forms/i);
 });

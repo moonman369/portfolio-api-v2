@@ -40,16 +40,21 @@ Lean by default: native `fetch` + `AbortSignal.timeout` (no axios), `node --env-
 
 - **Tool isolation is by `TOOLSETS` binding, never by prompting.** What an agent can do is
   what was passed to it.
-- **The email recipient is bound by the Web3Forms access key** — the inbox registered to
-  that key is the only destination, and no payload field can change it. Our payload never
-  carries a recipient field (`PAYLOAD_FIELDS` in `integrations/email.js`, held by a test).
-  The visitor's address is only ever `replyto`.
+- **Mail is paused behind `MOONMIND_MAIL_ENABLED`** (default off). Off: mail routes are
+  unmounted, nothing mail-shaped is documented or offered, and a mail request gets a
+  templated reply plus the booking links. The mail code stays, flag-gated — not dead code.
+- **When mail is on, the recipient is bound by the Web3Forms access key** — the inbox
+  registered to that key is the only destination, and no payload field can change it. Our
+  payload never carries a recipient field (`PAYLOAD_FIELDS` in `integrations/email.js`,
+  held by a test). The visitor's address is only ever `replyto`.
 - **Mail is sent from the browser, not the backend.** Web3Forms' free plan refuses
   server-side calls. The backend validates the address, shows the exact draft for a
   confirm, and hands the frontend the byte-exact payload only after an explicit "yes".
-- **Scheduling is a link, with no calendar write at all.** `book` states the configured
-  windows and returns the Calendly URL; it cannot see availability or know a booking
-  happened, and never claims to.
+- **Scheduling is a link, with no calendar write at all.** `book` returns the 15- and/or
+  30-minute Cal.com links (`MOONMIND_BOOKING_URL_15MIN` / `_30MIN`), each checked with one
+  GET before it is shown. Availability and timezone live only in Cal.com — the bot never
+  states hours or windows. It cannot see availability or know whether a booking happened,
+  and never claims to.
 - **The `action` node has no tool and is not an agent.** `book` and `mail` branch inside
   one node; the mail flow is a deterministic state machine with one extraction call.
 - Every outbound call has a timeout; retries live only in that outbound layer.

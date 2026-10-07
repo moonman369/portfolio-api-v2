@@ -272,6 +272,24 @@ one; the payload has no recipient field; caps trip; a failed issue is never issu
 reported failure lands as `failed`; CLAUDE.md and ARCHITECTURE.md no longer describe calendar
 writes, a config recipient or `MOONMIND_OWNER_EMAIL`.
 
+### `[x]` Phase 10.1 — Cal.com instead of Calendly, no booking windows in code, mail paused
+*Done 2026-10-06. Gate settled in Decisions (status-code link check; `book`-only
+inheritance; `mail` field omitted while paused; §11 stubbed; preference kept).*
+**Scope:** `book` hands out Cal.com links from `MOONMIND_BOOKING_URL_15MIN` / `_30MIN` —
+both, labelled, with "Which works better?", or the one length asked for — each checked with
+one GET before it is shown (`integrations/scheduling.js`, cached), with a fixed plain-words
+reply per failure and a `book_link_error` step in the feed. No hours, windows or timezone
+anywhere in code. Router gains `slots.duration`; a bare "30" reaches `book` by
+inheritance, never `activeFlow`. Mail paused behind `MOONMIND_MAIL_ENABLED` (default
+off): routes unmounted, docs and capabilities silent, a mail request gets a paused reply
+plus the links, a stuck mid-mail thread is cleared once. Mail code and tests stay, gated.
+**Done when:** no Calendly outside history and `docs/reference/`; no availability values in
+`src/`; live: "book a call" → both links + question, "15" → one link, "quick 30 min chat" →
+one link, a made-up slug → that length named unavailable and the other offered; router eval
+has `book` prompts with and without a length; with the default config nothing mail-related
+is reachable, documented or offered; mail tests pass with the flag on; CUTOVER.md and
+PROGRESS record the frontend / Web3Forms-key step.
+
 ### `[ ]` Phase 11 — Cutover + final structure audit
 **Due BEFORE this phase starts, not at it:** Phase 0's CI/CD deploy and live parity run
 (see Phase 0 open items 1-5). Everything since Phase 0 was built against an unverified
@@ -1387,6 +1405,93 @@ without them `book` / `mail` say they are unavailable.
    `stats-eval`, Phase 3a's `retrieval-parity`, Phase 3b's `knowledge-eval` (now also
    against the 0.82 floor), Phase 4's two live re-checks, Phase 8's `MOONMIND_AGENT_MODEL`.
 
+### Phase 10.1 — Cal.com + mail paused — 2026-10-06
+
+**Shipped.** Three changes, nothing else: Calendly → Cal.com (link only), no availability
+in code with a 15/30-minute choice and a link check, and mail paused behind a flag. 483
+offline tests pass. Live: router eval **49/49 + 17/17** (seven `book` prompts with and
+without a length, two "pick a length" conversations, the mail prompts still `action` +
+`mail`); `docs/evals/action.md` **PASS** on nine scenarios across three suites.
+
+**Step 0 — how Cal.com reports a broken link** (probed 2026-10-06):
+
+| URL | Status | `<title>` |
+|---|---|---|
+| `cal.com/moonman369/15min` | 200 | `15 min meeting \| Ayan Maiti \| Cal.com` |
+| `cal.com/moonman369/30min` | 200 | `30 min meeting \| Ayan Maiti \| Cal.com` |
+| `cal.com/moonman369/no-such-event-9384` | 404 | `404: This page could not be found. \| Cal.com` |
+| `cal.com/zz-no-such-user-93847/15min` | 404 | same 404 page |
+
+A real 404, not a 200 error page, so the status is the signal. The page text is useless as a
+marker: "disabled", "unavailable" and "no longer available" are in every page's bundle,
+working ones included. **A hidden or disabled event was not probed** (none was set up);
+it falls under the same rule and is an open item.
+
+**Live checks, as the brief listed them** (`docs/evals/action.md`): "book a call" → both
+links + "Which works better?"; then "15" → only the 15-minute link; "can we have a quick 30
+min chat?" → only the 30-minute link; the 15-minute URL pointed at a made-up slug → "The
+15-minute option isn't available right now — its booking page couldn't be found" and only
+the 30-minute link. The made-up slug is an in-process config override in the eval (suite
+2), so `.env` was never changed and there was nothing to restore.
+
+**Found and fixed while verifying.** The router filled `preference` with the length on a
+bare "15", and the reply read "You mentioned 15 — pick an open time…". The router prompt
+now says a length is `duration`, never `preference`, and `toPreference` drops a
+preference that is only a length (`LENGTH_ONLY`), with a test.
+
+**Mail, paused.** With `MOONMIND_MAIL_ENABLED` off (the default): `POST
+/mail/:submissionId/result` is not mounted (404); `/chat` and `GET /runs/:id` carry no
+`mail` field; OpenAPI documents neither; capabilities, refusal and the scope guard offer
+booking, not messages; an unclear `action` request gets the booking links instead of a
+question offering mail; a mail request gets "Sending messages isn't available right now,
+but you can book a 15- or 30-minute call with Ayan instead" plus the links — no
+extraction, MX, payload or `mail_events` write, no `activeFlow`. A thread checkpointed
+mid-mail is cleared in the router (`hasMailState`) and gets that reply once.
+**The mail endpoints and the `mail` field are paused, not removed from the API docs by
+accident: the flag is `MOONMIND_MAIL_ENABLED` in `src/config.js`.**
+
+**Files.** New: `src/integrations/scheduling.js`, `test/integrations/scheduling.test.js`,
+`test/agent/booking.test.js`, `test/http/mail.test.js` (Phase 10's four HTTP mail tests,
+moved unchanged into a flag-on process, plus one), `docs/CUTOVER.md` (stub). Changed:
+`config.js`, `nodes/action.js`, `nodes/router.js`, `nodes/simple.js`, `nodes/agents.js`,
+`prompts.js`, `http/app.js`, `http/chat.js`, `http/openapi.js`, `scripts/action-eval.js`
+(rewritten as three suites), `scripts/router-eval.js` (new prompts, `slots` threaded
+through conversations, slot checks per turn), `.env.example`, `CLAUDE.md`,
+`docs/ARCHITECTURE.md` §1/§4/§5, `docs/FRONTEND_INTEGRATION.md` (§2, §4.2, §9, §10, §11
+rewritten), `docs/evals/action.md`; every test file's env prelude gains the two booking
+URLs. Ayan's local `.env` (gitignored): the Calendly line replaced by the two Cal.com URLs
+and `MOONMIND_MAIL_ENABLED=false`.
+
+**Env vars.** Five added, two removed, total 98: `MOONMIND_BOOKING_URL_15MIN` and
+`MOONMIND_BOOKING_URL_30MIN` (**required**, https), `MOONMIND_BOOKING_CHECK_TIMEOUT_MS`
+(3000), `MOONMIND_BOOKING_CHECK_CACHE_MS` (300000), `MOONMIND_MAIL_ENABLED` (false).
+Removed: `MOONMIND_CALENDLY_URL`, `MOONMIND_BOOKING_WINDOWS`. `WEB3FORMS_ACCESS_KEY` is
+now required only when mail is on. `MOONMIND_TIMEZONE` stays — it is `resolve_time`'s,
+not booking's.
+
+**Deviations.** Eight, recorded below (55-62).
+
+**Open items.**
+1. **Set both booking URLs on the VM before the next deploy** — they are required, so a
+   VM `.env` without them stops the container at boot. Remove `MOONMIND_CALENDLY_URL` and
+   `MOONMIND_BOOKING_WINDOWS` there too (unknown variables are ignored, but they mislead).
+2. **Frontend / Web3Forms key — manual, outside this repo** (`docs/CUTOVER.md`): the
+   backend flag cannot stop a Web3Forms form in the frontend. Remove any such form and
+   key from the frontend, and rotate or delete the key in the Web3Forms dashboard.
+3. **A hidden or disabled Cal.com event is unverified.** If Cal.com serves one with 200,
+   `book` would hand out a link that shows an error page. Hide one event for a minute,
+   probe it, and record the result; the `<title>` is a clean fallback marker if needed.
+4. **This machine still cannot reach Atlas** (TLS alert 80), so `action-eval` ran with
+   `--memory` again; booking needs no Mongo, but suite 3's `mail_events` writes are
+   covered offline only.
+5. **`/chat` turns log a broken link to the server log only.** The `book_link_error` feed
+   step exists only for `/runs` turns — `/chat` has no feed.
+6. **File sizes:** `action.js` 486 (was 344), `router.js` 354, `prompts.js` 827,
+   `config.js` 458, `chat.js` 292, `openapi.js` 571. The `nodes/mail.js` cut noted in
+   Phase 10 would now take ~230 lines out of `action.js`; it adds a file to the layout,
+   so it stays for the Phase 11 audit.
+7. **Carried over:** everything in Phase 10's open items except 1 (superseded by 1 above).
+
 ---
 
 ## Decisions
@@ -1502,7 +1607,9 @@ without them `book` / `mail` say they are unavailable.
   backend cannot prove the bytes sent equal the bytes issued (the reported SHA-256 makes a
   change visible, not impossible); caps bind at issuance, not at send; `sent`/`failed` is
   whatever the browser reports.
-- **2026-09-25 — Calendly link and bookable windows are config-only** (Ayan):
+- *Superseded 2026-10-06 by Phase 10.1: Cal.com replaced Calendly, and no windows are
+  stated at all (see the 2026-10-06 entries below).*
+  **2026-09-25 — Calendly link and bookable windows are config-only** (Ayan):
   `MOONMIND_CALENDLY_URL` + `MOONMIND_BOOKING_WINDOWS`, set on the VM, no values in the
   repo. Until both are set, `book` says scheduling is unavailable. The windows text must
   match what the Calendly event enforces — the bot repeats it verbatim. Also recorded:
@@ -1513,6 +1620,38 @@ without them `book` / `mail` say they are unavailable.
   confirm turn carries `mailAction: { type: "confirm", display: "confirm_card", … }` so the
   frontend renders a card whose buttons send "yes"/"no" as ordinary messages. No edit
   turn: anything but a clear yes cancels, and the draft is never re-extracted.
+- **2026-10-06 — Cal.com replaces Calendly, link only** (Ayan, Phase 10.1). One event per
+  meeting length, `MOONMIND_BOOKING_URL_15MIN` / `_30MIN`, exposed as `booking.urls` keyed
+  by minutes so nothing else lists the lengths. **No webhook receiver, no bookings
+  collection, no Cal.com API calls.** Cal.com was chosen partly because its free plan
+  includes webhooks, so booking-awareness stays possible later; it is not built now.
+- **2026-10-06 — Phase 10's bookable-windows wording decision is superseded** (Ayan). The
+  bot no longer states windows, hours or a timezone at all — they live only in Cal.com —
+  so it can never disagree with the booking page. Every reply with a link says Cal.com
+  shows times in the visitor's own timezone.
+- **2026-10-06 — The link check is the only outbound call `book` makes** (Phase 10.1
+  gate). A GET per link about to be shown, following redirects, 3000 ms timeout
+  (`MOONMIND_BOOKING_CHECK_TIMEOUT_MS`). **Detection is the HTTP status**, verified live:
+  2xx → `ok`; 404/410 → `not_found`; any other status, a timeout, a network error or a
+  thrown error → `unreachable`. Results — good and bad — are cached per URL for 5 minutes
+  (`MOONMIND_BOOKING_CHECK_CACHE_MS`). No retries: the cache bounds what an outage costs.
+- **2026-10-06 — A bare length after a booking reply inherits `book`** (Ayan, at the gate).
+  `action` stays out of `INHERITABLE_ROUTES`; the router inherits it only when the previous
+  turn ended as `slots.action === "book"`, which only hands out links. `mail` is never
+  inherited. No `activeFlow`: offering both links in the first reply makes the choice
+  optional, so nothing is held open and nothing can get stuck.
+- **2026-10-06 — With mail paused, the `mail` response field is omitted, not null** (Ayan,
+  at the gate), from `/chat`, `GET /runs/:id` and the OpenAPI spec. The frontend never
+  built §11, so nothing reads it.
+- **2026-10-06 — FRONTEND_INTEGRATION.md §11 is stubbed, pointing at commit `005e617`**
+  (Ayan) for the full browser-send brief, rather than deleted without a pointer.
+- **2026-10-06 — `slots.preference` stays in `book` replies** (Ayan), echoed as the
+  visitor's own words with the existing "can't promise a time" wording.
+- **2026-10-06 — Mail code is flag-gated on purpose, not dead code** (Ayan). `MOONMIND_MAIL_ENABLED`
+  (default off) gates `integrations/email.js`, the mail state machine, the report route and
+  every mail offer; the mail tests run with an explicit `enabled: true` config. **The Phase
+  11 audit must not delete it.** `WEB3FORMS_ACCESS_KEY` is required only while the flag is
+  on — boot fails fast if it is on without one.
 
 ---
 
@@ -2442,3 +2581,30 @@ with its own count.
     the mail flow on a real topic change. Before Phase 10 it wrote route and slots only.
     Leaving the flow anywhere else (e.g. in `generate`) would have let an abandoned draft
     survive into the next turn, where a bare "yes" would send it.
+
+## Phase 10.1 deviations from the brief
+
+55. **`slots.duration` holds any positive whole number of minutes, not `15 | 30 | null`.**
+    "An hour" must reach `book` as 60 so it can say only 15 and 30 are offered; a field
+    that could only hold 15 or 30 would have turned it into null, i.e. "no length stated".
+    Which lengths select a link is still config (`booking.urls`) alone.
+56. **The "30" follow-up needed a change to inheritance.** The brief said it comes back
+    "through 6.5's previous-route inheritance", but 6.5 deliberately never inherits
+    `action`. Settled at the gate: `book` only (Decisions, 2026-10-06).
+57. **A stuck mail thread is `activeFlow: "action"`, cleared in the router.** The brief
+    named `activeFlow = 'mail'`; the flow has been `"action"` since Phase 10 (Deviation 52).
+    The router already owns ending the mail flow (Deviation 54), so it clears all three
+    fields there, before any model call — a waiting "yes" is never classified.
+58. **With mail off, an `action` request naming neither half gets the booking links.**
+    The clarify question ("book a call, or send him a message?") offers mail; booking is
+    the only thing left to offer.
+59. **The paused-mail reply ends the turn as `slots.action: "book"`.** It shows both links,
+    so a "30" next should pick one, exactly as after a booking reply.
+60. **No timezone line on a reply with no link.** "Every `book` reply keeps one line"
+    about the visitor's timezone — kept on every reply that shows a link, left off the
+    all-links-failed replies, where it would describe a page the visitor cannot open.
+61. **One router prompt line beyond `duration`:** a length is never `preference`, with a
+    deterministic guard behind it — prompted by the live "You mentioned 15" bug.
+62. **`book_link_error` is the feed step `action.book_link_error`, type `error`.** The feed
+    has exactly four step types and only shows sub-steps named `<node>.<name>`; this is
+    that convention, not a new step type.

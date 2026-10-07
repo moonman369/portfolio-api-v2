@@ -165,6 +165,7 @@ function createApp() {
   // Built once at boot: the spec is derived from schemas, not from the request.
   const openApiDocument = buildOpenApiDocument({
     maxMessageChars: config.moonmind.maxMessageChars,
+    mailEnabled: config.mail.enabled,
   });
   const renderedDocs = docsPage();
 
